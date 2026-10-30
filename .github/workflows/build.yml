@@ -1,0 +1,44 @@
+name: Build unsigned iPadOS IPA
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  build:
+    runs-on: macos-15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode information
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+      - name: Build without signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project AMFIOpenProbe.xcodeproj \
+            -target AMFIOpenProbe \
+            -configuration Release \
+            -sdk iphoneos \
+            CONFIGURATION_BUILD_DIR="$RUNNER_TEMP/AMFIOutput" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+      - name: Assemble unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/AMFIOutput/AMFIOpenProbe.app"
+          test -d "$APP"
+          mkdir -p "$RUNNER_TEMP/package/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/package/Payload/"
+          cd "$RUNNER_TEMP/package"
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/AMFIOpenProbe-unsigned.ipa" Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AMFIOpenProbe-unsigned-ipa
+          path: AMFIOpenProbe-unsigned.ipa
+          if-no-files-found: error
