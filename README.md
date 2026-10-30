@@ -1,28 +1,45 @@
-# AMFI Open Probe
+# IOKit Reachability Probe (iPadOS)
 
-A minimal iPadOS app that checks whether an ordinarily signed app can locate the `AppleMobileFileIntegrity` IOKit service and open a type-0 user-client connection.
+A narrowly scoped diagnostic app for iPadOS 26.4.2 research. It checks whether a normally signed app can **see and open type-0 IOKit user-client connections** for seven named service classes.
 
-**Safety:** This app calls only `IOServiceMatching`, `IOServiceGetMatchingService`, `IOServiceOpen`, `IOServiceClose` and `IOObjectRelease`. It never calls AMFI external methods or alters security state.
+This replaces the earlier single-service AMFI probe and remains deliberately non-exploitative. It **never calls IOConnectCallMethod / externalMethod**, attempts no privilege changes, and writes no system configuration.
 
-## Build
+## Fixed test set
 
-1. Open **Actions → Build unsigned iPadOS IPA → Run workflow** (or push to `main`).
-2. Download the `AMFIOpenProbe-unsigned-ipa` workflow artifact.
-3. Unzip it to obtain `AMFIOpenProbe-unsigned.ipa`.
-4. Sign with your own normal iPadOS app signing process, then install on your device.
-5. Run the app and copy the text it displays.
+- AppleMobileFileIntegrity
+- IOSurfaceRoot
+- IOHIDSystem
+- IOMobileFramebuffer
+- IOAudioEngine
+- IODTNVRAM
+- IOUSBHostDevice
 
-The GitHub Actions artifact is **unsigned** and cannot be installed directly. No signing certificates or secrets are needed for the CI build.
+A service may be absent, visible but closed to third-party apps, or connectible. Those states are different, and a successful connection does not establish a vulnerability.
 
-## Interpreting results
+## Build — MANUAL ONLY
 
-- `dlopen failed`: the framework isn't available to the app.
-- `AMFI service not found`: the service was not visible to the app.
-- `IOServiceOpen(type=0)`: the return code is the primary observation.
-- `Connection opened; closing immediately`: a type-0 connection was permitted, **not** proof of an AMFI bypass or permission to invoke privileged methods.
+**Nothing builds automatically from the current workflow.** It has only the `workflow_dispatch` trigger; no push or pull-request triggers.
 
-The iPadOS private IOKit interface is undocumented for third-party apps. No jailbreak or vulnerability is claimed. The build is configured for Xcode on a macOS GitHub Actions runner; it has not yet been validated by a successful workflow run.
+1. Open [Actions → Build unsigned iPadOS IPA](../../actions/workflows/build.yml).
+2. Click **Run workflow** and select **main**.
+3. Download the artifact `IOKitReachabilityProbe-unsigned-ipa`.
+4. Unzip it to obtain `IOKitReachabilityProbe-unsigned.ipa`.
+5. Sign it using your existing Feather certificate, without injected tweaks, and install it.
 
-## Scope
+The artifact is unsigned; GitHub does not require your certificate, provisioning profile, or Apple credentials.
 
-Target research device: iPad mini A17 Pro, iPadOS 26.4.2. The test does not require any additional firmware downloads, restores, or privileged operations.
+## On the iPad
+
+1. Open the app, **tap Run read-only connection checks**.
+2. It performs one exact-class service lookup and at most one type-0 open attempt for each class, closing any successful connection immediately.
+3. Tap **Copy complete report** and paste the result into the research conversation.
+
+The app does not scan arbitrary service classes, brute-force user-client types, or invoke external methods. While these are minimal tests, opening a connection is still an active OS operation. Test on your research device.
+
+## Limitations
+
+- Runs are on demand only, not at app launch.
+- A failed `IOServiceOpen` can reflect sandbox, entitlement, service-type, or other policy restrictions.
+- The build is intended for GitHub Actions macOS/Xcode and may need adaptation if the installed Xcode SDK changes. Report any build failures rather than assuming an IPA exists.
+- The target app and bundle ID are retained as `AMFIOpenProbe` for compatibility with the existing Xcode project; the generated IPA artifact is named IOKitReachabilityProbe.
+- No new firmware or jailbreak is required.
