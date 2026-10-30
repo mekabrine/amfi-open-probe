@@ -1,20 +1,37 @@
-# Read-only iPadOS File Explorer
+# Floating Graphic — iPadOS Picture in Picture proof
 
-Simple file browser for iPadOS built with UIKit. Displays the current absolute path, allows manual path entry and folder navigation, and previews UTF-8 text or the first 2 KiB of binary data. Reads are capped at 64 KiB per file.
+This repository now builds an iPadOS app that displays an **original bouncing cyan-and-white graphic over other apps**, using Apple's supported Picture in Picture (PiP) system. It does **not** inject code into another process, circumvent the sandbox, or modify SpringBoard. The result is a real cross-app visual overlay controlled by iPadOS.
 
-## Choosing files outside the app
+The app includes the previous read-only file browser as a secondary screen.
 
-Use **Browse Files: choose folder** to grant access to a folder exposed in Apple's Files picker, including iCloud Drive, On My iPad, or a connected File Provider. The explorer can then browse the selected folder and its children for the duration of the app session. Use **Browse Files: choose file** to open a single document. These operations use security-scoped URLs and coordinated reads.
+## What it does
 
-Typing a path is not a permission grant. This app uses ordinary iPadOS APIs; it **does not inherit another app's access rights** or gain access to other applications' protected containers. Unavailable paths display the relevant access error.
+- On first launch, generates a 4-second, 640×360 H.264 video of a bouncing graphic on the device.
+- Previews the looping graphic in the app.
+- Offers **Start floating picture**. When iPadOS reports PiP as possible, tapping it requests an OS-managed floating window.
+- The PiP window can remain visible while you use the Home Screen, Safari, or other apps. You can move and resize it using normal iPadOS PiP controls.
+- The file browser remains available via **Open read-only file browser**.
 
-## Build and sign
+The animation is created using `AVAssetWriter`, `CoreGraphics`, `AVPlayerLooper`, and `AVPictureInPictureController`. No download is required to create the animation.
+
+## Install — manual workflow
+
+**No workflow runs automatically.** The workflow has only the `workflow_dispatch` trigger.
 
 1. Open [Actions → Build unsigned iPadOS IPA](../../actions/workflows/build.yml).
-2. Manually choose **Run workflow** on `main`. This workflow has no automatic push or pull-request triggers.
-3. Download the unsigned IPA from the completed run's artifact ZIP.
-4. Sign the IPA with your existing Feather signing setup, without injecting tweaks, then install it.
+2. Select **Run workflow** on `main`.
+3. When it succeeds, download the artifact **`FloatingGraphic-unsigned-ipa`**.
+4. Extract the ZIP and obtain **`FloatingGraphic-unsigned.ipa`**.
+5. Sign the IPA with your Feather certificate and install it, without injecting tweaks.
+6. Launch **Floating Graphic**. The first launch generates the looping animation on-device.
+7. After the preview starts, tap **Start floating picture**, then switch to another app.
 
-The internal Xcode project name is retained from the original probe. The installed app displays **Read-only Explorer**. The workflow may still use an older IPA artifact label.
+If PiP is unavailable, the app shows a message instead of attempting unsupported operations. Your iPad must have Picture in Picture enabled in system settings, and another PiP session must not be occupying the feature.
 
-No file changes, deletions, or uploads are performed by this app. A successful build has not yet been verified after this update.
+## Scope and limitations
+
+A floating PiP window is **not arbitrary process code execution**, code injection, root access, or a jailbreak. The compositor manages the overlay; the app's code still executes in its own sandbox. This is a working implementation to test a visible, cross-app effect without needing to exploit the operating system.
+
+The internal Xcode target/bundle ID remains `AMFIOpenProbe` for compatibility with the earlier project. This can replace that installation when signed with the same identifier.
+
+The project has been committed to GitHub but **no CI build or on-device run has been performed as part of this update**. Send the error log if the manual build fails.
