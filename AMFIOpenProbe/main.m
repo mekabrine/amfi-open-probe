@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <dlfcn.h>
+#import <string.h>
 #import <mach/mach.h>
 
 typedef uint32_t probe_io_object_t;
@@ -12,6 +13,7 @@ typedef probe_io_service_t (*ProbeGetService)(mach_port_t, CFDictionaryRef);
 typedef kern_return_t (*ProbeOpen)(probe_io_service_t, mach_port_t, uint32_t, probe_io_connect_t *);
 typedef kern_return_t (*ProbeClose)(probe_io_connect_t);
 typedef kern_return_t (*ProbeRelease)(probe_io_object_t);
+typedef kern_return_t (*ProbeCallStruct)(probe_io_connect_t, uint32_t, const void *, size_t, void *, size_t *);
 
 static NSString *RunReachabilityProbe(void) {
     NSMutableArray<NSString *> *out = [NSMutableArray array];
@@ -93,6 +95,87 @@ static NSString *RunReachabilityProbe(void) {
     return [out componentsJoinedByString:@"\n"];
 }
 
+
+/*
+ * Selector 13 was audited in the exact iPadOS 26.4.2 IOSurface binary:
+ * - Dispatch: 0 scalar inputs, 0 structure inputs, 40-byte structure output.
+ * - Handler: 0xfffffff009c39cf0.
+ * - It only reads fields and writes the output, with no state mutations.
+ * - Five output bytes (33, 36..39) are not explicitly written by the handler.
+ * This test checks what an ordinary caller receives; no exploitation or fuzzing.
+ */
+static NSString *RunPaddingProbe(void) {
+    NSMutableArray<NSString *> *out = [NSMutableArray array];
+    [out addObject:@"IOSurface selector-13 padding verification"];
+    [out addObject:@"One audited read-only selector, exactly 3 calls, zero input."];
+    [out addObject:@"Raw response contents are not logged; only five padding bytes."];
+    void *handle = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW | RTLD_LOCAL);
+    if (!handle) {
+        [out addObject:[NSString stringWithFormat:@"IOKit dlopen failed: %s", dlerror() ?: "unknown"]];
+        return [out componentsJoinedByString:@"\n"];
+    }
+    ProbeMatching matching = (ProbeMatching)dlsym(handle, "IOServiceMatching");
+    ProbeGetService get = (ProbeGetService)dlsym(handle, "IOServiceGetMatchingService");
+    ProbeOpen openClient = (ProbeOpen)dlsym(handle, "IOServiceOpen");
+    ProbeClose closeClient = (ProbeClose)dlsym(handle, "IOServiceClose");
+    ProbeRelease release = (ProbeRelease)dlsym(handle, "IOObjectRelease");
+    ProbeCallStruct callStruct = (ProbeCallStruct)dlsym(handle, "IOConnectCallStructMethod");
+    if (!matching || !get || !openClient || !closeClient || !release || !callStruct) {
+        [out addObject:@"Required IOKit symbols unavailable."];
+        dlclose(handle);
+        return [out componentsJoinedByString:@"\n"];
+    }
+    CFMutableDictionaryRef query = matching("IOSurfaceRoot");
+    if (!query) {
+        [out addObject:@"IOSurface matching dictionary unavailable."];
+        dlclose(handle);
+        return [out componentsJoinedByString:@"\n"];
+    }
+    probe_io_service_t service = get(MACH_PORT_NULL, query);
+    if (!service) {
+        [out addObject:@"IOSurfaceRoot not visible."];
+        dlclose(handle);
+        return [out componentsJoinedByString:@"\n"];
+    }
+    probe_io_connect_t connection = MACH_PORT_NULL;
+    kern_return_t status = openClient(service, mach_task_self(), 0, &connection);
+    [out addObject:[NSString stringWithFormat:@"IOServiceOpen: 0x%08x", (uint32_t)status]];
+    if (status == KERN_SUCCESS && connection != MACH_PORT_NULL) {
+        const uint8_t markers[3] = {0x00, 0xa5, 0x5a};
+        const unsigned positions[5] = {33, 36, 37, 38, 39};
+        for (unsigned k = 0; k < 3; k++) {
+            uint8_t bytes[40];
+            memset(bytes, markers[k], sizeof(bytes));
+            size_t outputSize = sizeof(bytes);
+            kern_return_t result = callStruct(connection, 13, NULL, 0, bytes, &outputSize);
+            [out addObject:[NSString stringWithFormat:@"Run %u | prefill 0x%02x | result 0x%08x | output %lu",
+                            k + 1, (unsigned)markers[k], (uint32_t)result, (unsigned long)outputSize]];
+            if (result == KERN_SUCCESS && outputSize == sizeof(bytes)) {
+                BOOL unchanged = YES;
+                NSMutableString *pad = [NSMutableString stringWithString:@"  offsets 33,36-39:"];
+                for (unsigned j = 0; j < 5; j++) {
+                    uint8_t value = bytes[positions[j]];
+                    [pad appendFormat:@" %02x", (unsigned)value];
+                    if (value != markers[k]) unchanged = NO;
+                }
+                [out addObject:pad];
+                [out addObject:unchanged ? @"  All five match caller's prefill." :
+                 @"  At least one byte differs from caller's prefill."];
+            }
+        }
+        kern_return_t closeResult = closeClient(connection);
+        [out addObject:[NSString stringWithFormat:@"IOServiceClose: 0x%08x", (uint32_t)closeResult]];
+    } else {
+        [out addObject:@"No connection, so selector 13 was not called."];
+        if (connection != MACH_PORT_NULL) closeClient(connection);
+    }
+    release(service);
+    dlclose(handle);
+    [out addObject:@"Nonzero or changing padding alone does not prove kernel disclosure."];
+    [out addObject:@"End of selector-13 test."];
+    return [out componentsJoinedByString:@"\n"];
+}
+
 @interface ProbeAppDelegate : UIResponder <UIApplicationDelegate>
 @property (nonatomic, strong) UIWindow *window;
 @property (nonatomic, strong) UITextView *report;
@@ -117,7 +200,7 @@ static NSString *RunReachabilityProbe(void) {
     [stack addArrangedSubview:title];
 
     UILabel *subtitle = [UILabel new];
-    subtitle.text = @"Runs only when you tap Run. No external methods.";
+    subtitle.text = @"On-demand survey plus one individually audited read-only IOSurface method. No fuzzing.";
     subtitle.numberOfLines = 0;
     subtitle.font = [UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     [stack addArrangedSubview:subtitle];
@@ -126,6 +209,11 @@ static NSString *RunReachabilityProbe(void) {
     [run setTitle:@"Run read-only connection checks" forState:UIControlStateNormal];
     [run addTarget:self action:@selector(runProbe:) forControlEvents:UIControlEventTouchUpInside];
     [stack addArrangedSubview:run];
+
+    UIButton *padding = [UIButton buttonWithType:UIButtonTypeSystem];
+    [padding setTitle:@"Inspect IOSurface selector 13 (read-only)" forState:UIControlStateNormal];
+    [padding addTarget:self action:@selector(runPaddingProbe:) forControlEvents:UIControlEventTouchUpInside];
+    [stack addArrangedSubview:padding];
 
     UIButton *copy = [UIButton buttonWithType:UIButtonTypeSystem];
     [copy setTitle:@"Copy complete report" forState:UIControlStateNormal];
@@ -136,7 +224,7 @@ static NSString *RunReachabilityProbe(void) {
     self.report.editable = NO;
     self.report.selectable = YES;
     self.report.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
-    self.report.text = @"Ready. Tap Run to check the fixed list of seven services.\nOnly type-0 IOServiceOpen and IOServiceClose are used.";
+    self.report.text = @"Ready.\nSurvey: seven service open/close checks.\nSelector 13: separate read-only, three-call padding verification.\nTap a button to start; nothing runs automatically." ;
     [stack addArrangedSubview:self.report];
 
     [vc.view addSubview:stack];
@@ -146,6 +234,9 @@ static NSString *RunReachabilityProbe(void) {
 }
 - (void)runProbe:(id)sender {
     self.report.text = RunReachabilityProbe();
+}
+- (void)runPaddingProbe:(id)sender {
+    self.report.text = RunPaddingProbe();
 }
 - (void)copyReport:(id)sender {
     UIPasteboard.generalPasteboard.string = self.report.text ?: @"";
