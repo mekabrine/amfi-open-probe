@@ -335,12 +335,13 @@
                 ok = NO; break;
             }
             CVPixelBufferLockBaseAddress(pixel, 0);
+            CGColorSpaceRef rgb = CGColorSpaceCreateDeviceRGB();
             CGContextRef ctx = CGBitmapContextCreate(
                 CVPixelBufferGetBaseAddress(pixel), width, height, 8,
-                CVPixelBufferGetBytesPerRow(pixel),
-                CGColorSpaceCreateDeviceRGB(),
+                CVPixelBufferGetBytesPerRow(pixel), rgb,
                 kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
             );
+            CGColorSpaceRelease(rgb);
             if (!ctx) {
                 CVPixelBufferUnlockBaseAddress(pixel, 0);
                 CVPixelBufferRelease(pixel);
