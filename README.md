@@ -1,45 +1,45 @@
-# IOKit Reachability Probe (iPadOS)
+# IOSurface Inspector — read-only reachability and padding test
 
-A narrowly scoped diagnostic app for iPadOS 26.4.2 research. It checks whether a normally signed app can **see and open type-0 IOKit user-client connections** for seven named service classes.
+iPadOS 26.4.2 (23E261) research app for a normally signed iPadOS app. It now contains **two separate, on-demand tests**:
 
-This replaces the earlier single-service AMFI probe and remains deliberately non-exploitative. It **never calls IOConnectCallMethod / externalMethod**, attempts no privilege changes, and writes no system configuration.
+1. **IOKit service survey**: checks visibility and type-0 opening for seven named classes. Immediately closes successful connections. Does not invoke external methods.
+2. **IOSurface selector 13 padding check**: opens IOSurfaceRoot, calls **only selector 13** three times with **no input**, reads its fixed 40-byte output, prints just the five padding bytes at offsets 33, 36–39, and closes the connection. This selector was individually audited from the user's exact kernelcache: handler 0xfffffff009c39cf0 reads internal fields and writes output; no visible state modification.
 
-## Fixed test set
+**This is a targeted diagnostic, not an exploit.** Do not interpret unusual bytes as a confirmed information leak. No arbitrary selectors, payloads, fuzzing, or system configuration changes are involved. Even a read-only kernel method call is an active operation on the research device.
 
-- AppleMobileFileIntegrity
-- IOSurfaceRoot
-- IOHIDSystem
-- IOMobileFramebuffer
-- IOAudioEngine
-- IODTNVRAM
-- IOUSBHostDevice
+## Why selector 13?
 
-A service may be absent, visible but closed to third-party apps, or connectible. Those states are different, and a successful connection does not establish a vulnerability.
+The iPadOS 26.4.2 dispatch descriptor for selector 13 specifies 0 input scalars, 0 input-structure bytes, and a 0x28-byte structure output. Its handler writes offsets 0–32 and 34–35 but does not explicitly write offsets **33 and 36–39** (five bytes total). XNU's method handler does not explicitly clear the in-band structure output at the argument-setup point. However, other IOKit/Mach mechanisms could initialize or sanitize the buffer, so there is **no confirmed vulnerability**.
 
-## Build — MANUAL ONLY
+The three calls prefill the app's output array with 0x00, 0xA5, and 0x5A before calling `IOConnectCallStructMethod`. This makes it easier to see whether the returned padding is deterministic or tracks the caller's marker; it does **not** definitively establish the origin of unexpected bytes.
 
-**Nothing builds automatically from the current workflow.** It has only the `workflow_dispatch` trigger; no push or pull-request triggers.
+Only the five candidate padding bytes and return values are displayed. The other 35 bytes of system information are deliberately not included in the diagnostic report.
+
+## Manual GitHub Actions build — nothing automatic
+
+The workflow has **only `workflow_dispatch`**, with no push or pull-request triggers.
 
 1. Open [Actions → Build unsigned iPadOS IPA](../../actions/workflows/build.yml).
-2. Click **Run workflow** and select **main**.
-3. Download the artifact `IOKitReachabilityProbe-unsigned-ipa`.
-4. Unzip it to obtain `IOKitReachabilityProbe-unsigned.ipa`.
-5. Sign it using your existing Feather certificate, without injected tweaks, and install it.
+2. Manually click **Run workflow** for `main`.
+3. Download artifact **`IOSurfacePadCheck-unsigned-ipa`**.
+4. Extract the ZIP to obtain **`IOSurfacePadCheck-unsigned.ipa`**.
+5. Use your existing Feather certificate to sign the IPA (without tweak injection), then install it.
 
-The artifact is unsigned; GitHub does not require your certificate, provisioning profile, or Apple credentials.
+The Xcode project and executable target retain the original internal name `AMFIOpenProbe` for build compatibility; the home-screen display name is **IOSurface Inspector**. This can replace the earlier probe if signed with the same app identifier.
 
-## On the iPad
+## On-device procedure
 
-1. Open the app, **tap Run read-only connection checks**.
-2. It performs one exact-class service lookup and at most one type-0 open attempt for each class, closing any successful connection immediately.
-3. Tap **Copy complete report** and paste the result into the research conversation.
+1. Launch **IOSurface Inspector**.
+2. Tap **Inspect IOSurface selector 13 (read-only)** — the app will make three identical read-only calls with differing caller-side prefill markers.
+3. Tap **Copy complete report** and paste the report into the research conversation.
 
-The app does not scan arbitrary service classes, brute-force user-client types, or invoke external methods. While these are minimal tests, opening a connection is still an active OS operation. Test on your research device.
+If the calls fail, their return codes are useful on their own.
 
-## Limitations
+## Interpreting the padding check
 
-- Runs are on demand only, not at app launch.
-- A failed `IOServiceOpen` can reflect sandbox, entitlement, service-type, or other policy restrictions.
-- The build is intended for GitHub Actions macOS/Xcode and may need adaptation if the installed Xcode SDK changes. Report any build failures rather than assuming an IPA exists.
-- The target app and bundle ID are retained as `AMFIOpenProbe` for compatibility with the existing Xcode project; the generated IPA artifact is named IOKitReachabilityProbe.
-- No new firmware or jailbreak is required.
+- If returned padding matches each different marker, the bytes may be untouched or preserved by the call path. This **does not prove** a kernel leak.
+- If all bytes are zero, the output path may be sanitizing or zero-initializing the padding.
+- If padding contains unexpected nonzero values, we have a **candidate that requires further tracing and confirmation**, not an immediate exploit finding.
+- If selector 13 is blocked, we must not infer it is reachable just because the user-client connection succeeds.
+
+No new IPSW, restore, jailbreaking tool, or extra entitlements are required. A failed or crashed build should be reported with its workflow log.
