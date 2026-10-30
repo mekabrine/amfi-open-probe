@@ -1,6 +1,12 @@
 #import <UIKit/UIKit.h>
 #import <Foundation/Foundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <AVFoundation/AVFoundation.h>
+#import <AVKit/AVKit.h>
+#import <CoreVideo/CoreVideo.h>
+#import <CoreMedia/CoreMedia.h>
+#import <math.h>
+
 
 @interface BrowserController : UIViewController <UITableViewDataSource,UITableViewDelegate,UITextFieldDelegate,UIDocumentPickerDelegate>
 @property(nonatomic,strong) UITextField *pathField;
@@ -143,13 +149,255 @@
  self.preview.hidden=NO;self.status.text=@"Read-only preview; up to 64 KiB";
 }
 @end
+
+// A normal, user-initiated iPadOS Picture in Picture demo.
+// It displays an original bouncing graphic above other apps via the OS.
+// No cross-process code injection, sandbox escape, or privileged API use.
+@interface FloatingDemoController : UIViewController <AVPictureInPictureControllerDelegate>
+@property(nonatomic,strong) UILabel *statusLabel;
+@property(nonatomic,strong) UIView *videoView;
+@property(nonatomic,strong) AVQueuePlayer *player;
+@property(nonatomic,strong) AVPlayerLooper *looper;
+@property(nonatomic,strong) AVPlayerLayer *playerLayer;
+@property(nonatomic,strong) AVPictureInPictureController *pipController;
+@property(nonatomic,assign) BOOL generatingVideo;
+@end
+
+@implementation FloatingDemoController
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Floating Graphic";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    UIStackView *stack = [UIStackView new];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 14;
+    stack.alignment = UIStackViewAlignmentFill;
+    [self.view addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:20],
+        [stack.leadingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.leadingAnchor constant:20],
+        [stack.trailingAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.trailingAnchor constant:-20]
+    ]];
+
+    UILabel *heading = [UILabel new];
+    heading.text = @"A floating image over other apps";
+    heading.font = [UIFont preferredFontForTextStyle:UIFontTextStyleTitle2];
+    heading.numberOfLines = 0;
+    [stack addArrangedSubview:heading];
+
+    UILabel *explain = [UILabel new];
+    explain.text = @"An animated graphic plays in Apple's Picture in Picture window. It can stay visible when you open another app. This is not tweak injection.";
+    explain.numberOfLines = 0;
+    explain.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    [stack addArrangedSubview:explain];
+
+    self.videoView = [UIView new];
+    self.videoView.backgroundColor = [UIColor colorWithRed:0.07 green:0.08 blue:0.14 alpha:1];
+    self.videoView.layer.cornerRadius = 12;
+    self.videoView.clipsToBounds = YES;
+    [self.videoView.heightAnchor constraintEqualToConstant:210].active = YES;
+    [stack addArrangedSubview:self.videoView];
+
+    self.statusLabel = [UILabel new];
+    self.statusLabel.numberOfLines = 0;
+    self.statusLabel.font = [UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
+    self.statusLabel.text = @"Preparing animation...";
+    [stack addArrangedSubview:self.statusLabel];
+
+    UIButton *start = [UIButton buttonWithType:UIButtonTypeSystem];
+    [start setTitle:@"Start floating picture" forState:UIControlStateNormal];
+    [start addTarget:self action:@selector(startPiP:) forControlEvents:UIControlEventTouchUpInside];
+    [stack addArrangedSubview:start];
+
+    UIButton *browser = [UIButton buttonWithType:UIButtonTypeSystem];
+    [browser setTitle:@"Open read-only file browser" forState:UIControlStateNormal];
+    [browser addTarget:self action:@selector(openBrowser:) forControlEvents:UIControlEventTouchUpInside];
+    [stack addArrangedSubview:browser];
+
+    if (![AVPictureInPictureController isPictureInPictureSupported]) {
+        self.statusLabel.text = @"Picture in Picture is not supported by this device.";
+        return;
+    }
+
+    NSError *audioError = nil;
+    [[AVAudioSession sharedInstance] setCategory:AVAudioSessionCategoryPlayback
+                                    withOptions:AVAudioSessionCategoryOptionMixWithOthers
+                                          error:&audioError];
+    [[AVAudioSession sharedInstance] setActive:YES error:NULL];
+    if (audioError) NSLog(@"Audio session setup: %@", audioError);
+
+    NSURL *url = [self animationURL];
+    if ([[NSFileManager defaultManager] fileExistsAtPath:url.path]) {
+        [self configurePlayerWithURL:url];
+    } else {
+        [self generateAnimationAtURL:url];
+    }
+}
+- (NSURL *)animationURL {
+    return [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"floating-demo.mp4"]];
+}
+- (void)viewDidLayoutSubviews {
+    [super viewDidLayoutSubviews];
+    self.playerLayer.frame = self.videoView.bounds;
+}
+- (void)openBrowser:(id)sender {
+    [self.navigationController pushViewController:[BrowserController new] animated:YES];
+}
+- (void)configurePlayerWithURL:(NSURL *)url {
+    self.player = [AVQueuePlayer new];
+    self.player.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+    AVPlayerItem *item = [AVPlayerItem playerItemWithURL:url];
+    self.looper = [AVPlayerLooper playerLooperWithPlayer:self.player templateItem:item];
+    self.playerLayer = [AVPlayerLayer playerLayerWithPlayer:self.player];
+    self.playerLayer.videoGravity = AVLayerVideoGravityResizeAspect;
+    self.playerLayer.frame = self.videoView.bounds;
+    [self.videoView.layer addSublayer:self.playerLayer];
+    self.pipController = [[AVPictureInPictureController alloc] initWithPlayerLayer:self.playerLayer];
+    self.pipController.delegate = self;
+    self.pipController.canStartPictureInPictureAutomaticallyFromInline = YES;
+    [self.player play];
+    self.statusLabel.text = @"Animation playing. Tap Start floating picture. If PiP is not ready yet, tap again after playback begins.";
+}
+- (void)startPiP:(id)sender {
+    if (!self.pipController) {
+        self.statusLabel.text = self.generatingVideo ? @"The animation is being created on device." : @"PiP player unavailable.";
+        return;
+    }
+    if (self.pipController.isPictureInPictureActive) {
+        self.statusLabel.text = @"Already floating. Switch to another app to see it.";
+        return;
+    }
+    if (!self.pipController.isPictureInPicturePossible) {
+        self.statusLabel.text = @"PiP isn't possible yet. Check Settings → Multitasking & Gestures → Picture in Picture, then let the preview play and try again.";
+        return;
+    }
+    [self.pipController startPictureInPicture];
+}
+- (void)pictureInPictureControllerDidStartPictureInPicture:(AVPictureInPictureController *)controller {
+    self.statusLabel.text = @"PiP started. Now go to Home or switch to any other app.";
+}
+- (void)pictureInPictureController:(AVPictureInPictureController *)controller failedToStartPictureInPictureWithError:(NSError *)error {
+    self.statusLabel.text = [NSString stringWithFormat:@"PiP failed: %@ (%ld)", error.localizedDescription, (long)error.code];
+}
+- (void)pictureInPictureControllerDidStopPictureInPicture:(AVPictureInPictureController *)controller {
+    self.statusLabel.text = @"PiP closed. You can start it again.";
+}
+- (void)generateAnimationAtURL:(NSURL *)url {
+    self.generatingVideo = YES;
+    self.statusLabel.text = @"Generating a short original video locally (first launch only)...";
+    __weak typeof(self) weakSelf = self;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        [[NSFileManager defaultManager] removeItemAtURL:url error:nil];
+        NSError *error = nil;
+        AVAssetWriter *writer = [[AVAssetWriter alloc] initWithURL:url fileType:AVFileTypeMPEG4 error:&error];
+        if (!writer) {
+            dispatch_async(dispatch_get_main_queue(), ^{ weakSelf.generatingVideo=NO;weakSelf.statusLabel.text=[NSString stringWithFormat:@"Video writer error: %@",error.localizedDescription];});
+            return;
+        }
+        const NSInteger width = 640, height = 360;
+        const NSInteger frames = 120, fps = 30;
+        NSDictionary *settings = @{
+            AVVideoCodecKey:AVVideoCodecTypeH264,
+            AVVideoWidthKey:@(width),
+            AVVideoHeightKey:@(height),
+            AVVideoCompressionPropertiesKey:@{AVVideoAverageBitRateKey:@(950000)}
+        };
+        AVAssetWriterInput *input = [AVAssetWriterInput assetWriterInputWithMediaType:AVMediaTypeVideo outputSettings:settings];
+        input.expectsMediaDataInRealTime = NO;
+        NSDictionary *pixelAttributes = @{
+            (NSString *)kCVPixelBufferPixelFormatTypeKey:@(kCVPixelFormatType_32BGRA),
+            (NSString *)kCVPixelBufferWidthKey:@(width),
+            (NSString *)kCVPixelBufferHeightKey:@(height),
+            (NSString *)kCVPixelBufferIOSurfacePropertiesKey:@{}
+        };
+        AVAssetWriterInputPixelBufferAdaptor *adaptor = [[AVAssetWriterInputPixelBufferAdaptor alloc]
+            initWithAssetWriterInput:input sourcePixelBufferAttributes:pixelAttributes];
+        if (![writer canAddInput:input]) {
+            dispatch_async(dispatch_get_main_queue(), ^{ weakSelf.generatingVideo=NO;weakSelf.statusLabel.text=@"Cannot add video writer input."; });
+            return;
+        }
+        [writer addInput:input];
+        if (![writer startWriting]) {
+            dispatch_async(dispatch_get_main_queue(), ^{ weakSelf.generatingVideo=NO;weakSelf.statusLabel.text=[NSString stringWithFormat:@"Video encoder failed: %@",writer.error.localizedDescription]; });
+            return;
+        }
+        [writer startSessionAtSourceTime:kCMTimeZero];
+        BOOL ok = YES;
+        for (NSInteger frame = 0; frame < frames; frame++) {
+            while (!input.readyForMoreMediaData && writer.status == AVAssetWriterStatusWriting) {
+                [NSThread sleepForTimeInterval:0.01];
+            }
+            if (writer.status != AVAssetWriterStatusWriting) { ok = NO; break; }
+            CVPixelBufferRef pixel = NULL;
+            if (!adaptor.pixelBufferPool ||
+                CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, adaptor.pixelBufferPool, &pixel) != kCVReturnSuccess) {
+                ok = NO; break;
+            }
+            CVPixelBufferLockBaseAddress(pixel, 0);
+            CGContextRef ctx = CGBitmapContextCreate(
+                CVPixelBufferGetBaseAddress(pixel), width, height, 8,
+                CVPixelBufferGetBytesPerRow(pixel),
+                CGColorSpaceCreateDeviceRGB(),
+                kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little
+            );
+            if (!ctx) {
+                CVPixelBufferUnlockBaseAddress(pixel, 0);
+                CVPixelBufferRelease(pixel);
+                ok = NO; break;
+            }
+            CGContextSetRGBFillColor(ctx, 0.035, 0.05, 0.105, 1);
+            CGContextFillRect(ctx, CGRectMake(0, 0, width, height));
+            // A loopable bouncing cyan-and-white emblem.
+            double phase = 2.0 * M_PI * ((double)frame / (double)frames);
+            CGFloat centerX = 100.0 + 440.0 * (0.5 + 0.5 * sin(phase));
+            CGFloat centerY = 75.0 + 210.0 * (0.5 + 0.5 * cos(2.0 * phase));
+            CGContextSetRGBFillColor(ctx, 0.06, 0.75, 0.94, 1);
+            CGContextFillEllipseInRect(ctx, CGRectMake(centerX - 54, centerY - 54, 108, 108));
+            CGContextSetRGBFillColor(ctx, 1, 1, 1, 1);
+            CGContextFillEllipseInRect(ctx, CGRectMake(centerX - 19, centerY - 19, 38, 38));
+            CGContextSetRGBStrokeColor(ctx, 0.33, 0.9, 1, 0.7);
+            CGContextSetLineWidth(ctx, 5);
+            CGContextStrokeRect(ctx, CGRectMake(15, 15, 610, 330));
+            CGContextFlush(ctx);
+            CGContextRelease(ctx);
+            CVPixelBufferUnlockBaseAddress(pixel, 0);
+            BOOL appended = [adaptor appendPixelBuffer:pixel withPresentationTime:CMTimeMake(frame, (int32_t)fps)];
+            CVPixelBufferRelease(pixel);
+            if (!appended) { ok = NO; break; }
+        }
+        [input markAsFinished];
+        if (!ok) {
+            [writer cancelWriting];
+            dispatch_async(dispatch_get_main_queue(), ^{
+                weakSelf.generatingVideo=NO;
+                weakSelf.statusLabel.text=[NSString stringWithFormat:@"Video generation failed: %@",writer.error.localizedDescription?:@"encoder/buffer issue"];
+            });
+            return;
+        }
+        [writer finishWritingWithCompletionHandler:^{
+            dispatch_async(dispatch_get_main_queue(), ^{
+                FloatingDemoController *strongSelf = weakSelf;
+                if (!strongSelf) return;
+                strongSelf.generatingVideo = NO;
+                if (writer.status == AVAssetWriterStatusCompleted) {
+                    [strongSelf configurePlayerWithURL:url];
+                } else {
+                    strongSelf.statusLabel.text = [NSString stringWithFormat:@"Video export failed: %@",writer.error.localizedDescription?:@"unknown error"];
+                }
+            });
+        }];
+    });
+}
+@end
+
 @interface ExplorerAppDelegate : UIResponder <UIApplicationDelegate>
 @property(nonatomic,strong) UIWindow *window;
 @end
 @implementation ExplorerAppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)options {
  self.window=[[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
- self.window.rootViewController=[[UINavigationController alloc] initWithRootViewController:[BrowserController new]];
+ self.window.rootViewController=[[UINavigationController alloc] initWithRootViewController:[FloatingDemoController new]];
  [self.window makeKeyAndVisible];return YES;
 }
 @end
