@@ -87,8 +87,15 @@
 - (void)visit:(NSString *)target {
  if (![target hasPrefix:@"/"]) {self.status.text=@"Enter an absolute path beginning with /";return;}
  NSString *normalized=target.stringByStandardizingPath;
- NSError *err=nil;
- NSArray *items=[[NSFileManager defaultManager] contentsOfDirectoryAtPath:normalized error:&err];
+ __block NSArray *items=nil;
+ __block NSError *readError=nil;
+ NSError *coordinateError=nil;
+ NSFileCoordinator *coordinator=[[NSFileCoordinator alloc] initWithFilePresenter:nil];
+ [coordinator coordinateReadingItemAtURL:[NSURL fileURLWithPath:normalized isDirectory:YES]
+  options:0 error:&coordinateError byAccessor:^(NSURL *coordinatedURL) {
+    items=[[NSFileManager defaultManager] contentsOfDirectoryAtPath:coordinatedURL.path error:&readError];
+  }];
+ NSError *err=readError?:coordinateError;
  self.path=normalized;self.pathField.text=normalized;self.preview.hidden=YES;
  self.entries=items?[items sortedArrayUsingSelector:@selector(localizedStandardCompare:)]:@[];
  self.status.text=items?[NSString stringWithFormat:@"%lu items • read-only",(unsigned long)items.count]:
@@ -114,10 +121,17 @@
  [self previewFile:full];
 }
 - (void)previewFile:(NSString *)full {
- NSError *err=nil;
- NSFileHandle *handle=[NSFileHandle fileHandleForReadingFromURL:[NSURL fileURLWithPath:full] error:&err];
- if(!handle){self.status.text=[NSString stringWithFormat:@"Cannot open: %@ (code %ld)",err.localizedDescription?:@"Denied",(long)err.code];return;}
- NSData *data=[handle readDataOfLength:65536];[handle closeFile];
+ __block NSData *data=nil;
+ __block NSError *readError=nil;
+ NSError *coordinateError=nil;
+ NSFileCoordinator *coordinator=[[NSFileCoordinator alloc] initWithFilePresenter:nil];
+ [coordinator coordinateReadingItemAtURL:[NSURL fileURLWithPath:full]
+  options:0 error:&coordinateError byAccessor:^(NSURL *coordinatedURL) {
+    NSFileHandle *handle=[NSFileHandle fileHandleForReadingFromURL:coordinatedURL error:&readError];
+    if(handle){data=[handle readDataOfLength:65536];[handle closeFile];}
+  }];
+ NSError *err=readError?:coordinateError;
+ if(!data){self.status.text=[NSString stringWithFormat:@"Cannot open: %@ (code %ld)",err.localizedDescription?:@"Denied",(long)err.code];return;}
  NSString *display=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
  if(!display){
   NSMutableString *hex=[NSMutableString stringWithString:@"Binary file (first 2 KiB):\n"];
