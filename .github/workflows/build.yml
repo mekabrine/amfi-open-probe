@@ -33,9 +33,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/package/Payload"
           cp -R "$APP" "$RUNNER_TEMP/package/Payload/"
           cd "$RUNNER_TEMP/package"
-          /usr/bin/zip -qry "$GITHUB_WORKSPACE/IOSurfacePadCheck-unsigned.ipa" Payload
+          /usr/bin/zip -qry "$GITHUB_WORKSPACE/FloatingGraphic-unsigned.ipa" Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: IOSurfacePadCheck-unsigned-ipa
-          path: IOSurfacePadCheck-unsigned.ipa
+          name: FloatingGraphic-unsigned-ipa
+          path: FloatingGraphic-unsigned.ipa
           if-no-files-found: error
