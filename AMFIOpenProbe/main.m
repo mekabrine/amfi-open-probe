@@ -103,6 +103,7 @@
 @property(nonatomic,strong) UIButton *runButton;
 @property(nonatomic,strong) UIButton *inventoryButton;
 @property(nonatomic,strong) UIButton *classCheckButton;
+@property(nonatomic,strong) UIButton *fastPathButton;
 @property(nonatomic,copy) NSString *lastLog;
 @end
 
@@ -138,6 +139,11 @@
     [self.classCheckButton setTitle:@"Check other 3 HID classes once" forState:UIControlStateNormal];
     [self.classCheckButton addTarget:self action:@selector(checkOtherHIDClasses:) forControlEvents:UIControlEventTouchUpInside];
 
+    self.fastPathButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.fastPathButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.fastPathButton setTitle:@"Check FastPath type 2 once (no selectors)" forState:UIControlStateNormal];
+    [self.fastPathButton addTarget:self action:@selector(checkFastPathOnce:) forControlEvents:UIControlEventTouchUpInside];
+
     self.output = [UITextView new];
     self.output.translatesAutoresizingMaskIntoConstraints = NO;
     self.output.editable = NO;
@@ -152,6 +158,7 @@
     [self.view addSubview:copyButton];
     [self.view addSubview:self.inventoryButton];
     [self.view addSubview:self.classCheckButton];
+    [self.view addSubview:self.fastPathButton];
     [self.view addSubview:self.output];
 
     UILayoutGuide *guide = self.view.safeAreaLayoutGuide;
@@ -169,7 +176,10 @@
         [self.classCheckButton.topAnchor constraintEqualToAnchor:self.inventoryButton.bottomAnchor constant:12],
         [self.classCheckButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
         [self.classCheckButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
-        [self.output.topAnchor constraintEqualToAnchor:self.classCheckButton.bottomAnchor constant:12],
+        [self.fastPathButton.topAnchor constraintEqualToAnchor:self.classCheckButton.bottomAnchor constant:12],
+        [self.fastPathButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
+        [self.fastPathButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
+        [self.output.topAnchor constraintEqualToAnchor:self.fastPathButton.bottomAnchor constant:12],
         [self.output.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
         [self.output.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
         [self.output.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-12]
@@ -311,6 +321,71 @@
             self.runButton.enabled = YES;
             self.inventoryButton.enabled = YES;
             // Keep classCheckButton disabled: no repeated opens on this screen.
+        });
+    });
+}
+
+
+/*
+ * Independent access prerequisite for the publicly documented
+ * IOHIDEventServiceFastPathUserClient (CVE-2026-28992 research lead).
+ * Apple's iPadOS 26.5 advisory confirms an IOHIDFamily locking fix.
+ * The published third-party analysis uses IOServiceOpen(type 2).
+ *
+ * Absolutely no user-client selectors, entitlement dictionaries, or race
+ * sequences from the public panic PoC are invoked. One service, one open
+ * attempt, immediate close, and no retries in this screen instance.
+ */
+- (void)checkFastPathOnce:(id)sender {
+    self.runButton.enabled = NO;
+    self.inventoryButton.enabled = NO;
+    self.classCheckButton.enabled = NO;
+    self.fastPathButton.enabled = NO;
+    self.output.text = @"Checking one FastPath connection (no method calls)...";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableString *log = [NSMutableString new];
+        [log appendFormat:@"HID FastPath Open-Only v1\nTimestamp (UTC): %@\nOS: %@\n\n",
+             [NSDate date], UIDevice.currentDevice.systemVersion];
+        io_iterator_t iterator = IO_OBJECT_NULL;
+        kern_return_t status = IOServiceGetMatchingServices(
+            kIOMainPortDefault, IOServiceMatching("IOHIDEventService"), &iterator);
+        [log appendFormat:@"IOHIDEventService | enumeration=0x%08x\n", (unsigned int)status];
+        BOOL found = NO;
+        if (status == KERN_SUCCESS && iterator != IO_OBJECT_NULL) {
+            io_service_t service = IO_OBJECT_NULL;
+            NSUInteger seen = 0;
+            while (seen < 64 && (service = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+                seen++;
+                io_name_t raw = {0};
+                kern_return_t cls = IOObjectGetClass(service, raw);
+                NSString *name = cls == KERN_SUCCESS ?
+                    [NSString stringWithUTF8String:raw] : nil;
+                if ([name isEqualToString:@"AOPTouchHIDDriver"]) {
+                    found = YES;
+                    io_connect_t connection = IO_OBJECT_NULL;
+                    const uint32_t fastPathType = 2u;
+                    kern_return_t result = IOServiceOpen(
+                        service, mach_task_self(), fastPathType, &connection);
+                    [log appendFormat:@"%@ | type=%u | open=0x%08x (%d)\n",
+                         name, fastPathType, (unsigned int)result, (int)result];
+                    if (connection != IO_OBJECT_NULL) IOServiceClose(connection);
+                    IOObjectRelease(service);
+                    break;
+                }
+                IOObjectRelease(service);
+            }
+            [log appendFormat:@"Visited: %lu (limit 64)\n", (unsigned long)seen];
+        }
+        if (iterator != IO_OBJECT_NULL) IOObjectRelease(iterator);
+        if (!found) [log appendString:@"AOPTouchHIDDriver | NOT_FOUND_WITHIN_LIMIT | open=NOT_ATTEMPTED\n"];
+        [log appendString:@"\nOne ordinary connection attempt at most; immediate close. ZERO external selectors, reports, gate inputs, race iterations, or thread churn.\nCVE-2026-28992's published PoCs are crash/panic demos, NOT controlled kernel read/write; they were NOT reproduced.\nA successful open proves only reachability, not vulnerability or exploitability.\n"];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.lastLog = [log copy];
+            self.output.text = self.lastLog;
+            self.runButton.enabled = YES;
+            self.inventoryButton.enabled = YES;
+            self.classCheckButton.enabled = YES;
+            // fastPathButton intentionally remains disabled: no repeats.
         });
     });
 }
