@@ -35,3 +35,19 @@ Stop after one run if the device shows abnormal behavior; do not stress-test or 
 There is no jailbreak, SpringBoard modification, filesystem sandbox bypass, or privileged code execution in this app.
 
 **Build status:** Source updated in GitHub. Xcode build and iPad test have not yet been run.
+
+## Reversible Erosion file-modification experiment
+
+The app now has a **File Test** button in the top right. It opens a separate screen without re-running any kernel probes.
+
+1. Open **File Test**. It creates `Documents/erosion-color-test.txt` with `BLUE` if the file does not exist. The screen shows the exact, UUID-specific absolute path.
+2. Tap **Copy file path**. In Erosion, navigate to **File Operations**, target that exact path using its parent directory and file name, and choose **Grant Access**. A prior cross-container read does **not** establish write access.
+3. Create a small plain-text file named anything containing just `GREEN` or `RED` followed by a newline. In Erosion's File Operations screen choose **Import File**, then **Overwrite File**. The target should be only the copied `erosion-color-test.txt`.
+4. Return to the service probe, tap **Reload file**. The displayed color and value should update if Erosion's cross-container write worked.
+
+This is a controlled and reversible write to a file belonging to **the user's own research app**. No OS or third-party files should be changed. To reset, overwrite the file with `BLUE`. Do not delete or modify unrelated files. Be aware that iPadOS may assign a different data-container UUID after uninstall/reinstall; always copy the current full path.
+
+**Pass criterion:** Before external modification, the app displays `BLUE`. After a successful Erosion overwrite, it displays `GREEN` or `RED` **without rebuilding/repackaging the application**. This demonstrates modification of another app's data, not process injection or kernel access.
+
+**Failure criterion:** Erosion cannot obtain write permission, fails to overwrite, or the app still reads `BLUE`. Record the Erosion error and the file-test display before drawing conclusions.
+
