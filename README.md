@@ -36,6 +36,21 @@ There is no jailbreak, SpringBoard modification, filesystem sandbox bypass, or p
 
 **Build status:** Source updated in GitHub. Xcode build and iPad test have not yet been run.
 
+## Targeted IOHIDFamily reachability test (new)
+
+**Why this test:** Apple's October 26, 2026 advisory reports IOHIDFamily CVE-2026-112515, an out-of-bounds read that could expose kernel memory. We **do not** know the affected user-client or vulnerable method. The original 23E261 kernelcache contains the IOHIDFamily extension, and Apple's public `IOHIDDevice` implementation documents a dedicated HID manager connection type, `0x00484944` (not the default `0`). Apple's public `IOHIDLibUserClient` source distinguishes ordinary from privileged clients, whereas `IOHIDEventServiceUserClient` requires a private entitlement.
+
+**Exactly what the new screen does:** Tap **HID Check** (top left) then **Run HID check once**. It performs a single `IOServiceGetMatchingService` on `IOHIDDevice`, `IOHIDEventService`, and `IOHIDSystem`, and logs each matched concrete class. For **IOHIDDevice only**, it attempts **one** `IOServiceOpen(..., 0x00484944, ...)` using the official HID manager connection type, logs the return code, and immediately closes any returned connection. The other two classes are **discovery only**. It never invokes a selector, sends a HID report, registers a callback, uses shared memory, or tries a race.
+
+**Interpretation:** `IOHIDDevice match=FOUND | open=0x00000000` establishes only that a normal signed app can create a particular HID connection. It is **not** a kernel read or proof of CVE-2026-112515. A denial constrains reachability; `NOT_FOUND` is inconclusive about other IOKit provider classes. No claim of jailbreak or process injection is made.
+
+Original sources:
+- [Apple IOHIDFamily: IOHIDLibUserClient.h](https://github.com/apple-oss-distributions/IOHIDFamily/blob/main/IOHIDFamily/IOHIDLibUserClient.h)
+- [Apple IOHIDFamily: IOHIDLibUserClient.cpp](https://github.com/apple-oss-distributions/IOHIDFamily/blob/main/IOHIDFamily/IOHIDLibUserClient.cpp)
+- [Apple security advisory: iPadOS 26.7.2](https://support.apple.com/en-us/149227)
+
+**Build:** The existing manual-only GitHub Actions workflow, artifact name and Feather signing steps are unchanged. To collect the result, install the updated unsigned IPA after signing it as usual, tap **HID Check**, tap **Run HID check once**, then **Copy results**. Stop if anything unexpected happens. No kernel-misuse experiment is part of the app.
+
 ## Reversible Erosion file-modification experiment
 
 The app now has a **File Test** button in the top right. It opens a separate screen without re-running any kernel probes.
