@@ -52,6 +52,21 @@ IOHIDSystem | match=NOT_FOUND | open=NOT_ATTEMPTED
 
 This is a diagnostic step only; do not infer an exploit from a discovered service.
 
+## HID class access v2 (31 October 2026)
+
+Results from the previous stock 23E261 app installation:
+
+- `IOHIDDevice`: 21 observed services: `AppleSPUHIDDevice` (16), `AppleHIDTransportHIDDevice` (3), `AppleWirelessChargingDevice` (1), `IOHIDUserDevice` (1).
+- `IOHIDEventService`: 64 observed at the enumeration cap; at least six concrete classes, **incomplete total**.
+- `IOHIDSystem`: zero matching service instances.
+- Previous `IOHIDDevice` connection to `AppleSPUHIDDevice` using type `0x00484944` was denied with `0xe00002e2`. This does **not** establish denial for the other three classes.
+
+**New button: `Check other 3 HID classes once`.** It walks up to 64 matching `IOHIDDevice` providers and attempts exactly **one** documented-type `IOServiceOpen` on the first `AppleHIDTransportHIDDevice`, `AppleWirelessChargingDevice`, and `IOHIDUserDevice` encountered. Any successful connection is immediately closed; additional instances of the same class and all `AppleSPUHIDDevice` objects are skipped. The button stays disabled after the check, preventing repeated opens in the same screen instance. The existing original reachability and inventory buttons are unchanged.
+
+**Interpretation:** A successful open only verifies one connection's accessibility to the ordinary signed app, not the vulnerable CVE method, kernel memory access, privileges, a jailbreak, or process injection. A denied result can be class/device-instance-specific. This test invokes no external methods, constructs no HID reports, sends no malformed buffers, and does no kernel stress.
+
+**Build policy:** Workflow remains `workflow_dispatch` only. Do not trigger any build automatically; run it manually if collecting a new on-device result.
+
 ## Targeted IOHIDFamily reachability test (new)
 
 **Why this test:** Apple's October 26, 2026 advisory reports IOHIDFamily CVE-2026-112515, an out-of-bounds read that could expose kernel memory. We **do not** know the affected user-client or vulnerable method. The original 23E261 kernelcache contains the IOHIDFamily extension, and Apple's public `IOHIDDevice` implementation documents a dedicated HID manager connection type, `0x00484944` (not the default `0`). Apple's public `IOHIDLibUserClient` source distinguishes ordinary from privileged clients, whereas `IOHIDEventServiceUserClient` requires a private entitlement.
