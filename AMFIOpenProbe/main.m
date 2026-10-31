@@ -101,6 +101,7 @@
 @interface HIDReachabilityController : UIViewController
 @property(nonatomic,strong) UITextView *output;
 @property(nonatomic,strong) UIButton *runButton;
+@property(nonatomic,strong) UIButton *inventoryButton;
 @property(nonatomic,copy) NSString *lastLog;
 @end
 
@@ -126,6 +127,11 @@
     [copyButton setTitle:@"Copy results" forState:UIControlStateNormal];
     [copyButton addTarget:self action:@selector(copyLog:) forControlEvents:UIControlEventTouchUpInside];
 
+    self.inventoryButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.inventoryButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.inventoryButton setTitle:@"Inventory HID providers" forState:UIControlStateNormal];
+    [self.inventoryButton addTarget:self action:@selector(inventoryProviders:) forControlEvents:UIControlEventTouchUpInside];
+
     self.output = [UITextView new];
     self.output.translatesAutoresizingMaskIntoConstraints = NO;
     self.output.editable = NO;
@@ -138,6 +144,7 @@
     [self.view addSubview:description];
     [self.view addSubview:self.runButton];
     [self.view addSubview:copyButton];
+    [self.view addSubview:self.inventoryButton];
     [self.view addSubview:self.output];
 
     UILayoutGuide *guide = self.view.safeAreaLayoutGuide;
@@ -149,7 +156,10 @@
         [self.runButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
         [copyButton.centerYAnchor constraintEqualToAnchor:self.runButton.centerYAnchor],
         [copyButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
-        [self.output.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:12],
+        [self.inventoryButton.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:12],
+        [self.inventoryButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
+        [self.inventoryButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
+        [self.output.topAnchor constraintEqualToAnchor:self.inventoryButton.bottomAnchor constant:12],
         [self.output.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
         [self.output.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
         [self.output.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-12]
@@ -160,8 +170,67 @@
     [UIPasteboard generalPasteboard].string = self.lastLog ?: self.output.text;
 }
 
+/*
+ * Enumerates registered service classes only. There is no IOServiceOpen,
+ * IOConnectCall, HID report, shared memory access or repeated selector use.
+ */
+- (void)inventoryProviders:(id)sender {
+    self.runButton.enabled = NO;
+    self.inventoryButton.enabled = NO;
+    self.output.text = @"Enumerating registered HID providers (read-only)...";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableString *log = [NSMutableString new];
+        [log appendFormat:@"HID Provider Inventory v1\nTimestamp (UTC): %@\nOS: %@\n\n",
+            [NSDate date], UIDevice.currentDevice.systemVersion];
+        for (NSString *family in @[@"IOHIDDevice", @"IOHIDEventService", @"IOHIDSystem"]) {
+            io_iterator_t iterator = IO_OBJECT_NULL;
+            kern_return_t result = IOServiceGetMatchingServices(
+                kIOMainPortDefault, IOServiceMatching(family.UTF8String), &iterator);
+            [log appendFormat:@"%@ | enumeration=0x%08x (%d)\n",
+                family, (unsigned int)result, (int)result];
+            if (result != KERN_SUCCESS || iterator == IO_OBJECT_NULL) {
+                if (iterator != IO_OBJECT_NULL) IOObjectRelease(iterator);
+                continue;
+            }
+            NSMutableDictionary<NSString *, NSNumber *> *counts = [NSMutableDictionary new];
+            NSUInteger seen = 0;
+            const NSUInteger maxProviders = 64;
+            io_service_t entry = IO_OBJECT_NULL;
+            while (seen < maxProviders && (entry = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+                io_name_t rawClass = {0};
+                kern_return_t classResult = IOObjectGetClass(entry, rawClass);
+                NSString *concrete = classResult == KERN_SUCCESS ?
+                    [NSString stringWithUTF8String:rawClass] : @"CLASS_UNAVAILABLE";
+                if (concrete.length == 0) concrete = @"CLASS_UNAVAILABLE";
+                counts[concrete] = @([counts[concrete] unsignedIntegerValue] + 1);
+                seen++;
+                IOObjectRelease(entry);
+            }
+            IOObjectRelease(iterator);
+            [log appendFormat:@"Observed: %lu (max %lu); concrete classes: %lu\n",
+                (unsigned long)seen, (unsigned long)maxProviders, (unsigned long)counts.count];
+            NSArray<NSString *> *names =
+                [[counts allKeys] sortedArrayUsingSelector:@selector(compare:)];
+            for (NSString *name in names) {
+                [log appendFormat:@"  %@ | count=%@\n", name, counts[name]];
+            }
+            if (seen == maxProviders)
+                [log appendString:@"  LIMIT REACHED; more providers may exist\n"];
+            [log appendString:@"\n"];
+        }
+        [log appendString:@"Registry enumeration only: zero connection attempts, external selectors or HID reports.\nCVE-2026-112515 is not confirmed to involve these providers.\n"];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.lastLog = [log copy];
+            self.output.text = self.lastLog;
+            self.runButton.enabled = YES;
+            self.inventoryButton.enabled = YES;
+        });
+    });
+}
+
 - (void)runCheck:(id)sender {
     self.runButton.enabled = NO;
+    self.inventoryButton.enabled = NO;
     self.output.text = @"Checking IOHIDFamily service registration...";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSMutableString *log = [NSMutableString new];
@@ -206,6 +275,7 @@
             self.lastLog = [log copy];
             self.output.text = self.lastLog;
             self.runButton.enabled = YES;
+            self.inventoryButton.enabled = YES;
         });
     });
 }
