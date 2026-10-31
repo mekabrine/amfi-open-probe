@@ -102,6 +102,7 @@
 @property(nonatomic,strong) UITextView *output;
 @property(nonatomic,strong) UIButton *runButton;
 @property(nonatomic,strong) UIButton *inventoryButton;
+@property(nonatomic,strong) UIButton *classCheckButton;
 @property(nonatomic,copy) NSString *lastLog;
 @end
 
@@ -115,7 +116,7 @@
     description.translatesAutoresizingMaskIntoConstraints = NO;
     description.numberOfLines = 0;
     description.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    description.text = @"Check IOHIDFamily service registration. Only IOHIDDevice receives one standard connection attempt using the published HID type. No method selectors or device reports.";
+    description.text = @"Inventory HID providers or check one representative of the three remaining device classes. A standard connection opens and immediately closes; no external-method selectors or HID reports.";
 
     self.runButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.runButton.translatesAutoresizingMaskIntoConstraints = NO;
@@ -132,6 +133,11 @@
     [self.inventoryButton setTitle:@"Inventory HID providers" forState:UIControlStateNormal];
     [self.inventoryButton addTarget:self action:@selector(inventoryProviders:) forControlEvents:UIControlEventTouchUpInside];
 
+    self.classCheckButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.classCheckButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.classCheckButton setTitle:@"Check other 3 HID classes once" forState:UIControlStateNormal];
+    [self.classCheckButton addTarget:self action:@selector(checkOtherHIDClasses:) forControlEvents:UIControlEventTouchUpInside];
+
     self.output = [UITextView new];
     self.output.translatesAutoresizingMaskIntoConstraints = NO;
     self.output.editable = NO;
@@ -145,6 +151,7 @@
     [self.view addSubview:self.runButton];
     [self.view addSubview:copyButton];
     [self.view addSubview:self.inventoryButton];
+    [self.view addSubview:self.classCheckButton];
     [self.view addSubview:self.output];
 
     UILayoutGuide *guide = self.view.safeAreaLayoutGuide;
@@ -159,7 +166,10 @@
         [self.inventoryButton.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:12],
         [self.inventoryButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
         [self.inventoryButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
-        [self.output.topAnchor constraintEqualToAnchor:self.inventoryButton.bottomAnchor constant:12],
+        [self.classCheckButton.topAnchor constraintEqualToAnchor:self.inventoryButton.bottomAnchor constant:12],
+        [self.classCheckButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
+        [self.classCheckButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
+        [self.output.topAnchor constraintEqualToAnchor:self.classCheckButton.bottomAnchor constant:12],
         [self.output.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
         [self.output.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
         [self.output.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-12]
@@ -224,6 +234,83 @@
             self.output.text = self.lastLog;
             self.runButton.enabled = YES;
             self.inventoryButton.enabled = YES;
+        });
+    });
+}
+
+
+/*
+ * Class-specific access check based on observed 23E261 inventory.
+ *
+ * The earlier probe already found a denied AppleSPUHIDDevice connection.
+ * Do not repeat that probe. Enumerate at most 64 IOHIDDevice providers
+ * and attempt one documented-type IOServiceOpen for the first match of
+ * each of the three remaining concrete classes. Close immediately.
+ * No IOConnectCall*, HID reports, shared memory, or racing.
+ */
+- (void)checkOtherHIDClasses:(id)sender {
+    self.runButton.enabled = NO;
+    self.inventoryButton.enabled = NO;
+    self.classCheckButton.enabled = NO;  // one-shot per screen instance
+    self.output.text = @"Checking three other HID device classes once...";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSArray<NSString *> *targets = @[
+            @"AppleHIDTransportHIDDevice",
+            @"AppleWirelessChargingDevice",
+            @"IOHIDUserDevice"
+        ];
+        NSMutableSet<NSString *> *completed = [NSMutableSet new];
+        NSMutableString *log = [NSMutableString new];
+        [log appendFormat:@"HID Class Access v2\nTimestamp (UTC): %@\nOS: %@\nBundle: %@\n\n",
+             [NSDate date], UIDevice.currentDevice.systemVersion,
+             NSBundle.mainBundle.bundleIdentifier ?: @"unknown"];
+        [log appendString:@"AppleSPUHIDDevice | SKIPPED (previously denied 0xe00002e2)\n"];
+        io_iterator_t iterator = IO_OBJECT_NULL;
+        kern_return_t matchResult = IOServiceGetMatchingServices(
+            kIOMainPortDefault, IOServiceMatching("IOHIDDevice"), &iterator);
+        [log appendFormat:@"IOHIDDevice | enumeration=0x%08x\n", (unsigned int)matchResult];
+
+        if (matchResult == KERN_SUCCESS && iterator != IO_OBJECT_NULL) {
+            const NSUInteger maxVisited = 64;
+            NSUInteger visited = 0;
+            io_service_t entry = IO_OBJECT_NULL;
+            while (visited < maxVisited && completed.count < targets.count &&
+                   (entry = IOIteratorNext(iterator)) != IO_OBJECT_NULL) {
+                visited++;
+                io_name_t className = {0};
+                kern_return_t classResult = IOObjectGetClass(entry, className);
+                NSString *name = classResult == KERN_SUCCESS ?
+                    [NSString stringWithUTF8String:className] : nil;
+                if (name != nil && [targets containsObject:name] &&
+                    ![completed containsObject:name]) {
+                    [completed addObject:name];
+                    io_connect_t connection = IO_OBJECT_NULL;
+                    const uint32_t type = 0x00484944u;
+                    kern_return_t result = IOServiceOpen(
+                        entry, mach_task_self(), type, &connection);
+                    [log appendFormat:@"%@ | type=0x%08x | open=0x%08x (%d)\n",
+                         name, type, (unsigned int)result, (int)result];
+                    if (connection != IO_OBJECT_NULL) IOServiceClose(connection);
+                }
+                IOObjectRelease(entry);
+            }
+            [log appendFormat:@"Visited: %lu (limit %lu)\n",
+                 (unsigned long)visited, (unsigned long)maxVisited];
+        }
+        if (iterator != IO_OBJECT_NULL) IOObjectRelease(iterator);
+
+        for (NSString *name in targets) {
+            if (![completed containsObject:name]) {
+                [log appendFormat:@"%@ | open=NOT_ATTEMPTED (no matched provider within bound)\n", name];
+            }
+        }
+        [log appendString:@"\nExactly one normal connection attempt per matched target class; successful connections immediately closed. No external selectors, HID reports, shared memory or racing.\nConnection success is NOT proof of CVE-2026-112515, kernel access, or injection.\n"];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.lastLog = [log copy];
+            self.output.text = self.lastLog;
+            self.runButton.enabled = YES;
+            self.inventoryButton.enabled = YES;
+            // Keep classCheckButton disabled: no repeated opens on this screen.
         });
     });
 }
