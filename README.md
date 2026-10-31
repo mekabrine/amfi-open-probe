@@ -1,37 +1,37 @@
-# Floating Graphic — iPadOS Picture in Picture proof
+# Kernel Service Probe — AppleAVE2 accessibility test (23E261)
 
-This repository now builds an iPadOS app that displays an **original bouncing cyan-and-white graphic over other apps**, using Apple's supported Picture in Picture (PiP) system. It does **not** inject code into another process, circumvent the sandbox, or modify SpringBoard. The result is a real cross-app visual overlay controlled by iPadOS.
+A minimal signed iPadOS application to test whether an ordinary third-party app can **discover and open** the AppleAVE2 IOKit user client on an iPad mini A17 Pro running iPadOS 26.4.2 (23E261). It does not attempt exploitation, fuzzing, kernel-memory modification, selector invocation, or process injection.
 
-The app includes the previous read-only file browser as a secondary screen.
+## Checks performed
 
-## What it does
+On tapping **Run one-time checks**, the app attempts exactly one `IOServiceGetMatchingService` and (if matched) one `IOServiceOpen(service, mach_task_self(), 0, ...)` against:
+- `AppleAVE2Driver` — **new target**
+- `IOSurfaceRoot`, `IOMobileFramebuffer`, `AppleMobileFileIntegrity`, `IODTNVRAM` — previously measured controls.
 
-- On first launch, generates a 4-second, 640×360 H.264 video of a bouncing graphic on the device.
-- Previews the looping graphic in the app.
-- Offers **Start floating picture**. When iPadOS reports PiP as possible, tapping it requests an OS-managed floating window.
-- The PiP window can remain visible while you use the Home Screen, Safari, or other apps. You can move and resize it using normal iPadOS PiP controls.
-- The file browser remains available via **Open read-only file browser**.
+Every successful connection is immediately closed, and every matched service object is released. The app additionally performs **passive discovery only** of `ANEHWDevice`, with no user-client open.
 
-The animation is created using `AVAssetWriter`, `CoreGraphics`, `AVPlayerLooper`, and `AVPictureInPictureController`. No download is required to create the animation.
+The output distinguishes `NOT_FOUND` from exact IOKit return codes. A missing matching class does **not** prove the embedded driver is unavailable; a successful open does **not** demonstrate an exploit.
 
-## Install — manual workflow
+## Build and installation
 
-**No workflow runs automatically.** The workflow has only the `workflow_dispatch` trigger.
+The GitHub Actions workflow is **manual-only** (`workflow_dispatch`). No build has been triggered.
 
 1. Open [Actions → Build unsigned iPadOS IPA](../../actions/workflows/build.yml).
-2. Select **Run workflow** on `main`.
-3. When it succeeds, download the artifact **`FloatingGraphic-unsigned-ipa`**.
-4. Extract the ZIP and obtain **`FloatingGraphic-unsigned.ipa`**.
-5. Sign the IPA with your Feather certificate and install it, without injecting tweaks.
-6. Launch **Floating Graphic**. The first launch generates the looping animation on-device.
-7. After the preview starts, tap **Start floating picture**, then switch to another app.
+2. Click **Run workflow**, select `main`.
+3. Download `KernelServiceProbe-unsigned-ipa` once the workflow passes, and extract `KernelServiceProbe-unsigned.ipa`.
+4. Sign and install through Feather with your normal certificate. This app uses the existing Xcode product/bundle ID `org.research.amfiopenprobe`.
+5. Launch **Kernel Service Probe** and tap **Run one-time checks**.
+6. Tap **Copy results** and share the log for interpretation.
 
-If PiP is unavailable, the app shows a message instead of attempting unsupported operations. Your iPad must have Picture in Picture enabled in system settings, and another PiP session must not be occupying the feature.
+Stop after one run if the device shows abnormal behavior; do not stress-test or send malformed inputs.
 
-## Scope and limitations
+## Interpretation
 
-A floating PiP window is **not arbitrary process code execution**, code injection, root access, or a jailbreak. The compositor manages the overlay; the app's code still executes in its own sandbox. This is a working implementation to test a visible, cross-app effect without needing to exploit the operating system.
+- `AppleAVE2Driver match=NOT_FOUND`: the class was not registered under this exact name, or isn't discoverable to the app.
+- `match=FOUND | open=0x00000000`: a default user-client connection was successfully opened and closed; an access prerequisite is met, not an exploit.
+- `match=FOUND | open=0x... nonzero`: exact error code constrains access/entitlement hypotheses.
+- `ANEHWDevice`: presence-only observation; no open operation is performed.
 
-The internal Xcode target/bundle ID remains `AMFIOpenProbe` for compatibility with the earlier project. This can replace that installation when signed with the same identifier.
+There is no jailbreak, SpringBoard modification, filesystem sandbox bypass, or privileged code execution in this app.
 
-The project has been committed to GitHub but **no CI build or on-device run has been performed as part of this update**. Send the error log if the manual build fails.
+**Build status:** Source updated in GitHub. Xcode build and iPad test have not yet been run.
