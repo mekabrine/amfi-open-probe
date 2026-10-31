@@ -52,6 +52,16 @@ IOHIDSystem | match=NOT_FOUND | open=NOT_ATTEMPTED
 
 This is a diagnostic step only; do not infer an exploit from a discovered service.
 
+## Additional FastPath access lead: CVE-2026-28992
+
+Apple's [iOS 26.5 security bulletin](https://support.apple.com/en-us/127110) confirms IOHIDFamily **CVE-2026-28992**, a memory corruption issue addressed with improved locking. The original 23E261 kernelcache contains the class name `IOHIDEventServiceFastPathUserClient` and the FastPath property names; this is **not** an independent identification of the precise vulnerable function.
+
+A [public research repo](https://github.com/0xjohnnydev/CVE-2026-28992-IOHIDFamily-FastPathUserClient-Race-Conditions) describes `IOServiceOpen(..., 2, ...)` for `IOHIDEventService` providers, but its demonstrations aim to **panic/reboot the device**, not supply controlled kernel reads, writes, or a jailbreak. Do **not** run or adapt the PoC's repeated open/close operations, selectors, specially crafted properties, or concurrent race loops on the stock iPad.
+
+The new app button **Check FastPath type 2 once (no selectors)** makes at most **one standard user-client connection** on the first matched `AOPTouchHIDDriver` (which was in the supplied inventory), closes any returned connection immediately, and logs only the status. It is separate from the three-class HID check, and stays disabled after one use per screen instance. A successful open is a reachability observation only. The app has no vulnerability trigger.
+
+No build was automatically run. Existing manual workflow and Feather signing remain unchanged.
+
 ## HID class access v2 (31 October 2026)
 
 Results from the previous stock 23E261 app installation:
