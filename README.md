@@ -36,6 +36,22 @@ There is no jailbreak, SpringBoard modification, filesystem sandbox bypass, or p
 
 **Build status:** Source updated in GitHub. Xcode build and iPad test have not yet been run.
 
+## HID device result and passive follow-up (October 31, 2026)
+
+The first physical-device run on stock iPad mini A17 Pro (iPadOS 26.4.2, 23E261) returned:
+
+```
+IOHIDDevice | match=FOUND | concrete=AppleSPUHIDDevice | type=0x00484944 | open=0xe00002e2 (-536870174)
+IOHIDEventService | match=FOUND | concrete=AppleARMPMUPowerSensor | open=NOT_ATTEMPTED
+IOHIDSystem | match=NOT_FOUND | open=NOT_ATTEMPTED
+```
+
+**Interpretation:** The first `IOHIDDevice` provider was a specialized `AppleSPUHIDDevice` instance and returned **NOT PERMITTED**. This proves the tested connection was denied, not that every HID device class rejects that type. Apple's public `IOHIDDevice.cpp` notes that subclasses may override the default HID user-client behavior. The event-service discovery did not include an open attempt.
+
+**New follow-up:** Open **HID Check**, then select **Inventory HID providers** instead of the old connection test. The new action passively enumerates up to 64 registered matches per family (`IOHIDDevice`, `IOHIDEventService`, and `IOHIDSystem`) and summarizes the concrete classes and counts. It never calls `IOServiceOpen`, invokes selectors or generates HID events. Select **Copy results** to share the inventory. Class enumeration does not itself demonstrate exploitability. The existing **Run HID check once** action is retained unchanged.
+
+This is a diagnostic step only; do not infer an exploit from a discovered service.
+
 ## Targeted IOHIDFamily reachability test (new)
 
 **Why this test:** Apple's October 26, 2026 advisory reports IOHIDFamily CVE-2026-112515, an out-of-bounds read that could expose kernel memory. We **do not** know the affected user-client or vulnerable method. The original 23E261 kernelcache contains the IOHIDFamily extension, and Apple's public `IOHIDDevice` implementation documents a dedicated HID manager connection type, `0x00484944` (not the default `0`). Apple's public `IOHIDLibUserClient` source distinguishes ordinary from privileged clients, whereas `IOHIDEventServiceUserClient` requires a private entitlement.
