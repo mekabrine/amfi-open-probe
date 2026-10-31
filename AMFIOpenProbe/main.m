@@ -89,6 +89,128 @@
 }
 @end
 
+
+/*
+ * IOHIDFamily reachability check
+ *
+ * Based on the public IOHIDFamily connection type
+ * kIOHIDLibUserClientConnectManager = 0x00484944 ("HID").
+ * This checks only ordinary service discovery and connection creation.
+ * No external selectors, IOConnectCall*, malformed buffers or racing.
+ */
+@interface HIDReachabilityController : UIViewController
+@property(nonatomic,strong) UITextView *output;
+@property(nonatomic,strong) UIButton *runButton;
+@property(nonatomic,copy) NSString *lastLog;
+@end
+
+@implementation HIDReachabilityController
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"HID Reachability";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+
+    UILabel *description = [UILabel new];
+    description.translatesAutoresizingMaskIntoConstraints = NO;
+    description.numberOfLines = 0;
+    description.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    description.text = @"Check IOHIDFamily service registration. Only IOHIDDevice receives one standard connection attempt using the published HID type. No method selectors or device reports.";
+
+    self.runButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.runButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.runButton setTitle:@"Run HID check once" forState:UIControlStateNormal];
+    [self.runButton addTarget:self action:@selector(runCheck:) forControlEvents:UIControlEventTouchUpInside];
+
+    UIButton *copyButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    copyButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [copyButton setTitle:@"Copy results" forState:UIControlStateNormal];
+    [copyButton addTarget:self action:@selector(copyLog:) forControlEvents:UIControlEventTouchUpInside];
+
+    self.output = [UITextView new];
+    self.output.translatesAutoresizingMaskIntoConstraints = NO;
+    self.output.editable = NO;
+    self.output.selectable = YES;
+    self.output.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    self.output.layer.cornerRadius = 10;
+    self.output.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    self.output.text = @"No checks have run.\\n\\nIOHIDFamily CVE-2026-112515 describes a kernel out-of-bounds read, but its affected user-client and reachability are not known. Discovery or an open connection is NOT evidence of that vulnerability.";
+
+    [self.view addSubview:description];
+    [self.view addSubview:self.runButton];
+    [self.view addSubview:copyButton];
+    [self.view addSubview:self.output];
+
+    UILayoutGuide *guide = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [description.topAnchor constraintEqualToAnchor:guide.topAnchor constant:16],
+        [description.leadingAnchor constraintEqualToAnchor:guide.leadingAnchor constant:16],
+        [description.trailingAnchor constraintEqualToAnchor:guide.trailingAnchor constant:-16],
+        [self.runButton.topAnchor constraintEqualToAnchor:description.bottomAnchor constant:16],
+        [self.runButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
+        [copyButton.centerYAnchor constraintEqualToAnchor:self.runButton.centerYAnchor],
+        [copyButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
+        [self.output.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:12],
+        [self.output.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
+        [self.output.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
+        [self.output.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-12]
+    ]];
+}
+
+- (void)copyLog:(id)sender {
+    [UIPasteboard generalPasteboard].string = self.lastLog ?: self.output.text;
+}
+
+- (void)runCheck:(id)sender {
+    self.runButton.enabled = NO;
+    self.output.text = @"Checking IOHIDFamily service registration...";
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSMutableString *log = [NSMutableString new];
+        [log appendFormat:@"HID Reachability v1\\nTimestamp (UTC): %@\\nOS: %@\\nBundle: %@\\n\\n",
+         [NSDate date], UIDevice.currentDevice.systemVersion,
+         NSBundle.mainBundle.bundleIdentifier ?: @"unknown"];
+
+        NSArray<NSString *> *classes = @[@"IOHIDDevice", @"IOHIDEventService", @"IOHIDSystem"];
+        for (NSString *name in classes) {
+            io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault,
+                                           IOServiceMatching(name.UTF8String));
+            if (service == IO_OBJECT_NULL) {
+                [log appendFormat:@"%@ | match=NOT_FOUND | open=NOT_ATTEMPTED\\n", name];
+                continue;
+            }
+
+            io_name_t concreteClass = {0};
+            kern_return_t classStatus = IOObjectGetClass(service, concreteClass);
+            [log appendFormat:@"%@ | match=FOUND | concrete=%@",
+                name, classStatus == KERN_SUCCESS ?
+                [NSString stringWithUTF8String:concreteClass] : @"UNAVAILABLE"];
+
+            if ([name isEqualToString:@"IOHIDDevice"]) {
+                // Apple IOHIDFamily's published HID manager connection type.
+                // Open the first matching service only; close it immediately.
+                const uint32_t hidConnectionType = 0x00484944u;
+                io_connect_t connection = IO_OBJECT_NULL;
+                kern_return_t result = IOServiceOpen(service, mach_task_self(),
+                                                       hidConnectionType, &connection);
+                [log appendFormat:@" | type=0x%08x | open=0x%08x (%d)\\n",
+                    hidConnectionType, (unsigned int)result, (int)result];
+                if (connection != IO_OBJECT_NULL) IOServiceClose(connection);
+            } else {
+                [log appendString:@" | open=NOT_ATTEMPTED (discovery only)\\n"];
+            }
+            IOObjectRelease(service);
+        }
+
+        [log appendString:@"\\nCaution: IOHIDEventServiceUserClient checks a private HID entitlement in published Apple source; it is deliberately not opened here.\\nNo external selectors, device reports, shared memory, or kernel-memory operations were attempted.\\nAn open connection is an access prerequisite only, not proof of a kernel exploit.\\n"];
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.lastLog = [log copy];
+            self.output.text = self.lastLog;
+            self.runButton.enabled = YES;
+        });
+    });
+}
+@end
+
 @interface ProbeController : UIViewController
 @property(nonatomic,strong) UITextView *output;
 @property(nonatomic,strong) UIButton *runButton;
@@ -100,6 +222,7 @@
     [super viewDidLoad];
     self.title = @"Kernel Service Probe";
     self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"File Test" style:UIBarButtonItemStylePlain target:self action:@selector(openFileTest:)];
+    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"HID Check" style:UIBarButtonItemStylePlain target:self action:@selector(openHIDCheck:)];
     self.view.backgroundColor = UIColor.systemBackgroundColor;
 
     UILabel *heading = [UILabel new];
@@ -155,6 +278,9 @@
         [self.output.trailingAnchor constraintEqualToAnchor:heading.trailingAnchor],
         [self.output.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-12]
     ]];
+}
+- (void)openHIDCheck:(id)sender {
+    [self.navigationController pushViewController:[HIDReachabilityController new] animated:YES];
 }
 - (void)openFileTest:(id)sender {
     [self.navigationController pushViewController:[ContainerChangeController new] animated:YES];
