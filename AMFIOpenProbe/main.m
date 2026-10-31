@@ -133,7 +133,7 @@
     self.output.backgroundColor = UIColor.secondarySystemBackgroundColor;
     self.output.layer.cornerRadius = 10;
     self.output.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
-    self.output.text = @"No checks have run.\\n\\nIOHIDFamily CVE-2026-112515 describes a kernel out-of-bounds read, but its affected user-client and reachability are not known. Discovery or an open connection is NOT evidence of that vulnerability.";
+    self.output.text = @"No checks have run.\n\nIOHIDFamily CVE-2026-112515 describes a kernel out-of-bounds read, but its affected user-client and reachability are not known. Discovery or an open connection is NOT evidence of that vulnerability.";
 
     [self.view addSubview:description];
     [self.view addSubview:self.runButton];
@@ -165,7 +165,7 @@
     self.output.text = @"Checking IOHIDFamily service registration...";
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
         NSMutableString *log = [NSMutableString new];
-        [log appendFormat:@"HID Reachability v1\\nTimestamp (UTC): %@\\nOS: %@\\nBundle: %@\\n\\n",
+        [log appendFormat:@"HID Reachability v1\nTimestamp (UTC): %@\nOS: %@\nBundle: %@\n\n",
          [NSDate date], UIDevice.currentDevice.systemVersion,
          NSBundle.mainBundle.bundleIdentifier ?: @"unknown"];
 
@@ -174,7 +174,7 @@
             io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault,
                                            IOServiceMatching(name.UTF8String));
             if (service == IO_OBJECT_NULL) {
-                [log appendFormat:@"%@ | match=NOT_FOUND | open=NOT_ATTEMPTED\\n", name];
+                [log appendFormat:@"%@ | match=NOT_FOUND | open=NOT_ATTEMPTED\n", name];
                 continue;
             }
 
@@ -191,16 +191,16 @@
                 io_connect_t connection = IO_OBJECT_NULL;
                 kern_return_t result = IOServiceOpen(service, mach_task_self(),
                                                        hidConnectionType, &connection);
-                [log appendFormat:@" | type=0x%08x | open=0x%08x (%d)\\n",
+                [log appendFormat:@" | type=0x%08x | open=0x%08x (%d)\n",
                     hidConnectionType, (unsigned int)result, (int)result];
                 if (connection != IO_OBJECT_NULL) IOServiceClose(connection);
             } else {
-                [log appendString:@" | open=NOT_ATTEMPTED (discovery only)\\n"];
+                [log appendString:@" | open=NOT_ATTEMPTED (discovery only)\n"];
             }
             IOObjectRelease(service);
         }
 
-        [log appendString:@"\\nCaution: IOHIDEventServiceUserClient checks a private HID entitlement in published Apple source; it is deliberately not opened here.\\nNo external selectors, device reports, shared memory, or kernel-memory operations were attempted.\\nAn open connection is an access prerequisite only, not proof of a kernel exploit.\\n"];
+        [log appendString:@"\nCaution: IOHIDEventServiceUserClient checks a private HID entitlement in published Apple source; it is deliberately not opened here.\nNo external selectors, device reports, shared memory, or kernel-memory operations were attempted.\nAn open connection is an access prerequisite only, not proof of a kernel exploit.\n"];
 
         dispatch_async(dispatch_get_main_queue(), ^{
             self.lastLog = [log copy];
