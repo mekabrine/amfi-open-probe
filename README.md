@@ -12,6 +12,29 @@ Every successful connection is immediately closed, and every matched service obj
 
 The output distinguishes `NOT_FOUND` from exact IOKit return codes. A missing matching class does **not** prove the embedded driver is unavailable; a successful open does **not** demonstrate an exploit.
 
+## Possible Tweaks / Examples — new app-only lab (31 October 2026)
+
+The main screen now has a **Possible Tweaks / Examples** button. This is a real, local UIKit demonstration of what a tweak *looks like*, **not** a jailbreak, kernel exploit, or cross-app overlay.
+
+**Examples you can use entirely on the iPad:**
+- **Show floating image in this app:** adds a 68-point, non-interactive image at the top-right of this app's own `UIWindow`. It stays visible when switching between the probe's own screens. Leaving the app hides it. Toggle it off to remove it.
+- **Choose custom image from Files:** uses Apple's built-in document picker. The selected image is downscaled to 128x128 and saved only to this app's Documents directory. Image import is capped at 12 MB. No Photos permission or desktop required.
+- **Apply pink tint inside this app:** changes the current app window and navigation bar tint using standard UIKit. Tap again to reset. Tint and overlay preferences are restored when this app starts.
+- **Open existing File Change Test:** accesses the previously established Erosion file-replacement color test without repeating kernel/HID probes.
+
+The screen also presents a factual **research status board**: `AOPTouchHIDDriver` FastPath type 2 opened on the user's device; representative HID manager opens were denied; `bad_query` cross-app data-container modifications were confirmed; newer FastPath/IOSurface/SpringBoard/`copyfile` CVEs remain research leads without working kernel-read/write or system-wide tweak chains.
+
+**No external user-client selectors, crash/race loops, other-app modifications, or privileged APIs were added.** The app-only image is deliberately named and disclosed as such. The underlying signed executable, entitlements, and manual-only build workflow are unchanged.
+
+For an on-device rebuild without a PC: visit [Build unsigned iPadOS IPA](../../actions/workflows/build.yml), choose **Run workflow** on `main`, download the resulting `KernelServiceProbe-unsigned-ipa` artifact, sign/install it using Feather, then open **Possible Tweaks / Examples**. There is no need to rerun any previously completed HID access test. Source changes were reviewed structurally but have **not been compiled with Xcode yet**.
+
+### Current exploit research verification
+
+- [Apple's CVE-2026-28992 record](https://www.cve.org/CVERecord?id=CVE-2026-28992) describes a FastPath-related IOHIDFamily memory corruption issue fixed in 26.5, possible app termination. Published PoCs deliberately panic devices, not reliable kernel read/write.
+- [Apple's October 2026 iPadOS 26.7.2 advisory](https://support.apple.com/en-us/149227) discloses the IOSurface race, SpringBoard out-of-bounds write, and symlink-handling protected-file-write vulnerability. No independently verified compatible tweak chain has been found.
+- [bad_query](https://github.com/forcequitOS/bad_query) provides a demonstrated sandbox escape within data-container limits, not system-wide UIKit injection.
+- The current [iPadOS 26 jailbreak compatibility table](https://theapplewiki.com/wiki/Jailbreak/26.x) lists no tool for 26.4.2.
+
 ## Build and installation
 
 The GitHub Actions workflow is **manual-only** (`workflow_dispatch`). No build has been triggered.
