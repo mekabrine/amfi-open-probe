@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <IOKit/IOKitLib.h>
 #import <mach/mach.h>
+#import <math.h>
 
 
 @interface ContainerChangeController : UIViewController
@@ -105,6 +106,7 @@ static NSString *const kExampleTintEnabled = @"ExampleTintEnabled";
 
 @interface AppTweakExamples : NSObject
 + (void)restoreInNavigation:(UINavigationController *)navigation;
++ (UIImage *)fitImage:(UIImage *)image;
 + (void)showOverlayInNavigation:(UINavigationController *)navigation;
 + (void)removeOverlayInNavigation:(UINavigationController *)navigation;
 + (void)applyTintInNavigation:(UINavigationController *)navigation;
