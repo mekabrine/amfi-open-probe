@@ -15,6 +15,23 @@ The main screen now offers **Exploit Research Status**, summarizing device-verif
 
 The action in `.github/workflows/build.yml` is still manually dispatched. A source commit does not establish that an IPA has compiled or been installed.
 
+## Research Tests navigation
+
+The app opens to **Research Tests**, a list of independent pages. Existing operations are unchanged:
+
+| Section | Page |
+| --- | --- |
+| App data | Erosion file-change validation |
+| HID / IOHIDFamily | HID service reachability |
+| HID / IOHIDFamily | HID provider inventory |
+| HID / IOHIDFamily | HID manager class opens |
+| HID / IOHIDFamily | AOPTouch FastPath type 2 |
+| Kernel services | AppleAVE2 and service opens |
+
+Each page exposes only its own run action and results. Nothing runs on launch. The earlier app-only visual examples and status popup are gone. Historical sections below may refer to the former combined HID screen.
+
+The GitHub Actions build remains manual-only. **This navigation update alone is not a reason to build an IPA; no new exploit capability was added.**
+
 ## Checks performed
 
 On tapping **Run one-time checks**, the app attempts exactly one `IOServiceGetMatchingService` and (if matched) one `IOServiceOpen(service, mach_task_self(), 0, ...)` against:
