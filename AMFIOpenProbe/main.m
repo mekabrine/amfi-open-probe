@@ -90,6 +90,266 @@
 @end
 
 
+
+/*
+ * Tweak Examples (app-local only).
+ *
+ * All effects below are implemented with ordinary UIKit. The overlay is
+ * installed as a non-interactive view in THIS app's own UIWindow. It never
+ * appears in SpringBoard, the system compositor, or other applications.
+ * No private API, kernel selectors, entitlements, or cross-app writes.
+ */
+static NSInteger const kExampleOverlayTag = 0x4f564c59;
+static NSString *const kExampleOverlayEnabled = @"ExampleOverlayEnabled";
+static NSString *const kExampleTintEnabled = @"ExampleTintEnabled";
+
+@interface AppTweakExamples : NSObject
++ (void)restoreInNavigation:(UINavigationController *)navigation;
++ (void)showOverlayInNavigation:(UINavigationController *)navigation;
++ (void)removeOverlayInNavigation:(UINavigationController *)navigation;
++ (void)applyTintInNavigation:(UINavigationController *)navigation;
++ (NSURL *)imageURL;
+@end
+
+@implementation AppTweakExamples
++ (NSURL *)imageURL {
+    NSURL *documents = [[[NSFileManager defaultManager]
+        URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] firstObject];
+    return [documents URLByAppendingPathComponent:@"tweak-example-image.png"];
+}
++ (UIImage *)defaultIcon {
+    UIGraphicsImageRenderer *renderer =
+        [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(128, 128)];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [[UIColor systemPurpleColor] setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, 128, 128)
+                                   cornerRadius:28] fill];
+        NSString *mark = @"✦";
+        NSDictionary *attrs = @{
+            NSFontAttributeName:[UIFont systemFontOfSize:88 weight:UIFontWeightBold],
+            NSForegroundColorAttributeName:UIColor.whiteColor
+        };
+        CGSize size = [mark sizeWithAttributes:attrs];
+        [mark drawAtPoint:CGPointMake((128-size.width)/2, (128-size.height)/2-4)
+          withAttributes:attrs];
+    }];
+}
++ (UIImage *)fitImage:(UIImage *)image {
+    if (!image) return nil;
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = 1;
+    UIGraphicsImageRenderer *renderer =
+        [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(128, 128) format:format];
+    return [renderer imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        CGFloat ratio = MIN(128.0/image.size.width, 128.0/image.size.height);
+        if (!isfinite(ratio) || ratio <= 0) return;
+        CGSize scaled = CGSizeMake(image.size.width*ratio, image.size.height*ratio);
+        [image drawInRect:CGRectMake((128-scaled.width)/2,
+                                     (128-scaled.height)/2, scaled.width, scaled.height)];
+    }];
+}
++ (void)removeOverlayInNavigation:(UINavigationController *)navigation {
+    UIWindow *window = navigation.view.window;
+    [[window viewWithTag:kExampleOverlayTag] removeFromSuperview];
+}
++ (void)showOverlayInNavigation:(UINavigationController *)navigation {
+    UIWindow *window = navigation.view.window;
+    if (!window) return;
+    [self removeOverlayInNavigation:navigation];
+    UIImage *image = [UIImage imageWithContentsOfFile:[self imageURL].path];
+    if (!image) image = [self defaultIcon];
+    UIImageView *badge = [[UIImageView alloc] initWithImage:image];
+    badge.translatesAutoresizingMaskIntoConstraints = NO;
+    badge.tag = kExampleOverlayTag;
+    badge.contentMode = UIViewContentModeScaleAspectFit;
+    badge.userInteractionEnabled = NO;
+    badge.layer.cornerRadius = 12;
+    badge.clipsToBounds = YES;
+    badge.accessibilityLabel = @"App-only floating image example";
+    [window addSubview:badge];
+    [NSLayoutConstraint activateConstraints:@[
+        [badge.widthAnchor constraintEqualToConstant:68],
+        [badge.heightAnchor constraintEqualToConstant:68],
+        [badge.topAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.topAnchor constant:72],
+        [badge.trailingAnchor constraintEqualToAnchor:window.safeAreaLayoutGuide.trailingAnchor constant:-12]
+    ]];
+}
++ (void)applyTintInNavigation:(UINavigationController *)navigation {
+    BOOL active = [[NSUserDefaults standardUserDefaults] boolForKey:kExampleTintEnabled];
+    navigation.view.window.tintColor = active ? UIColor.systemPinkColor : nil;
+    navigation.navigationBar.tintColor = active ? UIColor.systemPinkColor : nil;
+}
++ (void)restoreInNavigation:(UINavigationController *)navigation {
+    [self applyTintInNavigation:navigation];
+    if ([[NSUserDefaults standardUserDefaults] boolForKey:kExampleOverlayEnabled]) {
+        [self showOverlayInNavigation:navigation];
+    }
+}
+@end
+
+@interface TweakExamplesController : UIViewController <UIDocumentPickerDelegate>
+@property(nonatomic,strong) UIButton *overlayButton;
+@property(nonatomic,strong) UIButton *tintButton;
+@property(nonatomic,strong) UILabel *messageLabel;
+@end
+
+@implementation TweakExamplesController
+- (UILabel *)textLine:(NSString *)value font:(UIFont *)font {
+    UILabel *label = [UILabel new];
+    label.text = value;
+    label.font = font;
+    label.numberOfLines = 0;
+    return label;
+}
+- (UIButton *)actionButton:(NSString *)title action:(SEL)action {
+    UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+    [button setTitle:title forState:UIControlStateNormal];
+    button.titleLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleBody];
+    button.titleLabel.numberOfLines = 2;
+    button.titleLabel.textAlignment = NSTextAlignmentCenter;
+    button.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    button.layer.cornerRadius = 11;
+    [button addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    [button.heightAnchor constraintGreaterThanOrEqualToConstant:46].active = YES;
+    return button;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Possible Tweaks";
+    self.view.backgroundColor = UIColor.systemBackgroundColor;
+    UIScrollView *scroll = [UIScrollView new];
+    scroll.translatesAutoresizingMaskIntoConstraints = NO;
+    UIStackView *stack = [UIStackView new];
+    stack.translatesAutoresizingMaskIntoConstraints = NO;
+    stack.axis = UILayoutConstraintAxisVertical;
+    stack.spacing = 13;
+    [self.view addSubview:scroll];
+    [scroll addSubview:stack];
+    UILayoutGuide *guide = self.view.safeAreaLayoutGuide;
+    [NSLayoutConstraint activateConstraints:@[
+        [scroll.topAnchor constraintEqualToAnchor:guide.topAnchor],
+        [scroll.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor],
+        [scroll.leadingAnchor constraintEqualToAnchor:guide.leadingAnchor],
+        [scroll.trailingAnchor constraintEqualToAnchor:guide.trailingAnchor],
+        [stack.topAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.topAnchor constant:14],
+        [stack.bottomAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.bottomAnchor constant:-26],
+        [stack.leadingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.leadingAnchor constant:18],
+        [stack.trailingAnchor constraintEqualToAnchor:scroll.contentLayoutGuide.trailingAnchor constant:-18],
+        [stack.widthAnchor constraintEqualToAnchor:scroll.frameLayoutGuide.widthAnchor constant:-36]
+    ]];
+
+    [stack addArrangedSubview:[self textLine:@"Working visual examples — this app only"
+           font:[UIFont preferredFontForTextStyle:UIFontTextStyleTitle2]]];
+    [stack addArrangedSubview:[self textLine:
+        @"These use standard UIKit. Neither example modifies other apps, SpringBoard, or the kernel. The floating image remains visible when moving between screens inside this app."
+           font:[UIFont preferredFontForTextStyle:UIFontTextStyleBody]]];
+
+    self.overlayButton = [self actionButton:@"Show floating image in this app"
+                                    action:@selector(toggleOverlay:)];
+    [stack addArrangedSubview:self.overlayButton];
+    [stack addArrangedSubview:[self actionButton:@"Choose custom image from Files"
+                                            action:@selector(chooseImage:)]];
+    self.tintButton = [self actionButton:@"Apply pink tint inside this app"
+                                 action:@selector(toggleTint:)];
+    [stack addArrangedSubview:self.tintButton];
+    [stack addArrangedSubview:[self actionButton:@"Open existing File Change Test"
+                                            action:@selector(openFileChange:)]];
+    [stack addArrangedSubview:[self textLine:
+        @"Try navigating back to HID Check or File Test: the image stays over THIS app. Opening another app hides it. You can remove the image or reset the tint here."
+           font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]]];
+
+    [stack addArrangedSubview:[self textLine:@"Exploit research — evidence, not demos"
+           font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]]];
+    [stack addArrangedSubview:[self textLine:
+        @"CONFIRMED ON YOUR DEVICE\n"
+        "• FastPath type-2 connection: OPEN on AOPTouchHIDDriver. No kernel privilege or tweak injection.\n"
+        "• Standard HID manager opens: DENIED for four tested representative classes.\n"
+        "• Cross-app data-file changes: demonstrated previously with Erosion; app preferences/assets only where supported.\n\n"
+        "RESEARCH LEADS — NOT WORKING EXPLOITS\n"
+        "• CVE-2026-28992: FastPath race. Public demos cause panics, not controlled kernel read/write.\n"
+        "• CVE-2026-86966: copyfile protected-file-write advisory; no verified method or writable UI target.\n"
+        "• CVE-2026-112477: IOSurface kernel race; no reliable primitive.\n"
+        "• CVE-2026-112646: SpringBoard process-memory corruption; no identified usable trigger.\n\n"
+        "A persistent image over unrelated apps still requires a different privilege or system UI capability."
+           font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]]];
+    self.messageLabel = [self textLine:@"All example modifications are local and reversible."
+                                 font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    [stack addArrangedSubview:self.messageLabel];
+    [self updateLabels];
+}
+- (void)updateLabels {
+    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+    [self.overlayButton setTitle:
+        [prefs boolForKey:kExampleOverlayEnabled] ?
+        @"Remove floating image" : @"Show floating image in this app"
+        forState:UIControlStateNormal];
+    [self.tintButton setTitle:
+        [prefs boolForKey:kExampleTintEnabled] ?
+        @"Reset app tint" : @"Apply pink tint inside this app"
+        forState:UIControlStateNormal];
+}
+- (void)toggleOverlay:(id)sender {
+    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+    BOOL enabled = ![prefs boolForKey:kExampleOverlayEnabled];
+    [prefs setBool:enabled forKey:kExampleOverlayEnabled];
+    if (enabled) [AppTweakExamples showOverlayInNavigation:self.navigationController];
+    else [AppTweakExamples removeOverlayInNavigation:self.navigationController];
+    self.messageLabel.text = enabled ? @"App-only image enabled." : @"App-only image removed.";
+    [self updateLabels];
+}
+- (void)toggleTint:(id)sender {
+    NSUserDefaults *prefs = [NSUserDefaults standardUserDefaults];
+    [prefs setBool:![prefs boolForKey:kExampleTintEnabled] forKey:kExampleTintEnabled];
+    [AppTweakExamples applyTintInNavigation:self.navigationController];
+    self.messageLabel.text = @"App-only tint setting updated.";
+    [self updateLabels];
+}
+- (void)chooseImage:(id)sender {
+    UIDocumentPickerViewController *picker =
+        [[UIDocumentPickerViewController alloc] initWithDocumentTypes:@[@"public.image"]
+                                                              inMode:UIDocumentPickerModeImport];
+    picker.delegate = self;
+    picker.allowsMultipleSelection = NO;
+    [self presentViewController:picker animated:YES completion:nil];
+}
+- (void)documentPicker:(UIDocumentPickerViewController *)controller
+ didPickDocumentsAtURLs:(NSArray<NSURL *> *)urls {
+    NSURL *url = urls.firstObject;
+    if (!url) return;
+    NSNumber *fileSize = nil;
+    [url getResourceValue:&fileSize forKey:NSURLFileSizeKey error:nil];
+    if (fileSize.unsignedLongLongValue > 12ULL*1024*1024) {
+        self.messageLabel.text = @"Image too large. Please choose one under 12 MB.";
+        return;
+    }
+    BOOL scoped = [url startAccessingSecurityScopedResource];
+    NSData *data = [NSData dataWithContentsOfURL:url];
+    if (scoped) [url stopAccessingSecurityScopedResource];
+    if (data.length == 0 || data.length > 12ULL*1024*1024) {
+        self.messageLabel.text = @"Unable to load the chosen image (12 MB limit).";
+        return;
+    }
+    UIImage *fitted = [AppTweakExamples fitImage:[UIImage imageWithData:data]];
+    NSData *png = fitted ? UIImagePNGRepresentation(fitted) : nil;
+    NSError *error = nil;
+    BOOL saved = png && [png writeToURL:[AppTweakExamples imageURL]
+                                 options:NSDataWritingAtomic error:&error];
+    if (!saved) {
+        self.messageLabel.text = [NSString stringWithFormat:@"Image not saved: %@",
+                                   error.localizedDescription ?: @"unsupported format"];
+        return;
+    }
+    [[NSUserDefaults standardUserDefaults] setBool:YES forKey:kExampleOverlayEnabled];
+    [AppTweakExamples showOverlayInNavigation:self.navigationController];
+    self.messageLabel.text = @"Your custom image is now over this app only.";
+    [self updateLabels];
+}
+- (void)openFileChange:(id)sender {
+    [self.navigationController pushViewController:[ContainerChangeController new] animated:YES];
+}
+@end
+
+
 /*
  * IOHIDFamily reachability check
  *
@@ -446,6 +706,7 @@
 @interface ProbeController : UIViewController
 @property(nonatomic,strong) UITextView *output;
 @property(nonatomic,strong) UIButton *runButton;
+@property(nonatomic,strong) UIButton *examplesButton;
 @property(nonatomic,strong) NSString *lastLog;
 @end
 
@@ -483,6 +744,15 @@
     [copyButton addTarget:self action:@selector(copyLog:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:copyButton];
 
+    self.examplesButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    self.examplesButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [self.examplesButton setTitle:@"Possible Tweaks / Examples" forState:UIControlStateNormal];
+    self.examplesButton.backgroundColor = UIColor.secondarySystemBackgroundColor;
+    self.examplesButton.layer.cornerRadius = 10;
+    [self.examplesButton addTarget:self action:@selector(openExamples:)
+                forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:self.examplesButton];
+
     self.output = [UITextView new];
     self.output.translatesAutoresizingMaskIntoConstraints = NO;
     self.output.editable = NO;
@@ -505,11 +775,18 @@
         [self.runButton.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
         [copyButton.centerYAnchor constraintEqualToAnchor:self.runButton.centerYAnchor],
         [copyButton.trailingAnchor constraintEqualToAnchor:heading.trailingAnchor],
-        [self.output.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:10],
+        [self.examplesButton.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:12],
+        [self.examplesButton.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
+        [self.examplesButton.trailingAnchor constraintEqualToAnchor:heading.trailingAnchor],
+        [self.examplesButton.heightAnchor constraintEqualToConstant:44],
+        [self.output.topAnchor constraintEqualToAnchor:self.examplesButton.bottomAnchor constant:10],
         [self.output.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
         [self.output.trailingAnchor constraintEqualToAnchor:heading.trailingAnchor],
         [self.output.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-12]
     ]];
+}
+- (void)openExamples:(id)sender {
+    [self.navigationController pushViewController:[TweakExamplesController new] animated:YES];
 }
 - (void)openHIDCheck:(id)sender {
     [self.navigationController pushViewController:[HIDReachabilityController new] animated:YES];
@@ -572,6 +849,7 @@
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
     self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[ProbeController new]];
     [self.window makeKeyAndVisible];
+    [AppTweakExamples restoreInNavigation:(UINavigationController *)self.window.rootViewController];
     return YES;
 }
 @end
