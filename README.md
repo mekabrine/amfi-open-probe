@@ -52,6 +52,16 @@ IOHIDSystem | match=NOT_FOUND | open=NOT_ATTEMPTED
 
 This is a diagnostic step only; do not infer an exploit from a discovered service.
 
+## Confirmed iPadOS 26.4.2 device results — 31 October 2026
+
+**HID Class Access v2:** one representative of `AppleWirelessChargingDevice`, `AppleHIDTransportHIDDevice`, and `IOHIDUserDevice` each denied the documented HID-manager connection `0x00484944` with `0xe00002e2`. The already-tested `AppleSPUHIDDevice` was correctly skipped. This constrains tested representative connections, not all possible instances or user-client types.
+
+**HID FastPath Open-Only v1:** `IOHIDEventService` enumeration succeeded; the first `AOPTouchHIDDriver` matched after visiting **63** providers. `IOServiceOpen(service, mach_task_self(), 2, ...)` returned **`0x00000000`** and the connection was immediately closed. This **confirms normal signed app accessibility of that specific FastPath user-client connection on 23E261**. The test invoked no external method, race, or gate input; it does **not** confirm CVE-2026-28992 exploitability or kernel read/write.
+
+The public FastPath PoCs aim to kernel-panic affected devices and are not installed in this app. The next research work is **offline** method table, entitlement, locking, and patched-versus-vulnerable verification. No new IPA build is necessary to repeat this access check.
+
+Full evidence is saved in [private 23E261 research handoff](https://github.com/mekabrine/test/blob/main/ipad26-23E261/HID_FASTPATH_DEVICE_RESULTS_2026-10-31.md).
+
 ## Additional FastPath access lead: CVE-2026-28992
 
 Apple's [iOS 26.5 security bulletin](https://support.apple.com/en-us/127110) confirms IOHIDFamily **CVE-2026-28992**, a memory corruption issue addressed with improved locking. The original 23E261 kernelcache contains the class name `IOHIDEventServiceFastPathUserClient` and the FastPath property names; this is **not** an independent identification of the precise vulnerable function.
