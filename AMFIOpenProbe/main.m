@@ -595,6 +595,11 @@ typedef NS_ENUM(NSInteger, HIDTestMode) {
 #import <unistd.h>
 #import <errno.h>
 #import <dlfcn.h>
+#include <stdlib.h>
+#include <stdint.h>
+#ifndef SIGEV_KEVENT
+#define SIGEV_KEVENT 4
+#endif
 
 struct ProbeAIOEvent {
     uint64_t ident; int16_t filter; uint16_t flags; int32_t qos;
