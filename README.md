@@ -1,6 +1,6 @@
-# Kernel Service Probe — AppleAVE2 accessibility test (23E261)
+# iPadOS 26.4.2 Research Tests — iPad mini A17 Pro (23E261)
 
-A minimal signed iPadOS application to test whether an ordinary third-party app can **discover and open** the AppleAVE2 IOKit user client on an iPad mini A17 Pro running iPadOS 26.4.2 (23E261). It does not attempt exploitation, fuzzing, kernel-memory modification, selector invocation, or process injection.
+A manually signed research app for iPad mini A17 Pro on iPadOS 26.4.2 (23E261). The home screen separates the previously verified file-change, HID, FastPath and kernel-service checks into dedicated pages. It does not implement a new jailbreak, arbitrary-process tweak, memory-modification primitive or partial restore.
 
 ## Direct exploit research status (2026-10-31)
 
