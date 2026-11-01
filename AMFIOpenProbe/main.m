@@ -99,6 +99,13 @@
  * This checks only ordinary service discovery and connection creation.
  * No external selectors, IOConnectCall*, malformed buffers or racing.
  */
+typedef NS_ENUM(NSInteger, HIDTestMode) {
+    HIDTestModeServices = 0,
+    HIDTestModeInventory = 1,
+    HIDTestModeManagerClasses = 2,
+    HIDTestModeFastPath = 3
+};
+
 @interface HIDReachabilityController : UIViewController
 @property(nonatomic,strong) UITextView *output;
 @property(nonatomic,strong) UIButton *runButton;
@@ -106,44 +113,71 @@
 @property(nonatomic,strong) UIButton *classCheckButton;
 @property(nonatomic,strong) UIButton *fastPathButton;
 @property(nonatomic,copy) NSString *lastLog;
+@property(nonatomic,assign) HIDTestMode testMode;
+- (instancetype)initWithTestMode:(HIDTestMode)mode;
 @end
 
 @implementation HIDReachabilityController
+- (instancetype)initWithTestMode:(HIDTestMode)mode {
+    self = [super initWithNibName:nil bundle:nil];
+    if (self) _testMode = mode;
+    return self;
+}
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"HID Reachability";
     self.view.backgroundColor = UIColor.systemBackgroundColor;
+
+    NSString *descriptionText = nil;
+    NSString *buttonText = nil;
+    SEL action = NULL;
+    switch (self.testMode) {
+        case HIDTestModeServices:
+            self.title = @"HID Services";
+            buttonText = @"Check service reachability once";
+            descriptionText = @"Checks registered IOHID families and at most one normal HID manager connection. No external selectors.";
+            action = @selector(runCheck:);
+            break;
+        case HIDTestModeInventory:
+            self.title = @"HID Provider Inventory";
+            buttonText = @"Inventory providers";
+            descriptionText = @"Read-only registry enumeration of HID providers. No connections are opened.";
+            action = @selector(inventoryProviders:);
+            break;
+        case HIDTestModeManagerClasses:
+            self.title = @"HID Manager Classes";
+            buttonText = @"Check 3 other manager classes";
+            descriptionText = @"One standard manager-type open per representative HID device class. Earlier denied AppleSPUHIDDevice is skipped.";
+            action = @selector(checkOtherHIDClasses:);
+            break;
+        case HIDTestModeFastPath:
+            self.title = @"FastPath Type 2";
+            buttonText = @"Check AOPTouch type 2 once";
+            descriptionText = @"Tests a single AOPTouchHIDDriver type-2 open and closes it immediately. No selectors, memory writes or races. An open is NOT an exploit.";
+            action = @selector(checkFastPathOnce:);
+            break;
+    }
 
     UILabel *description = [UILabel new];
     description.translatesAutoresizingMaskIntoConstraints = NO;
     description.numberOfLines = 0;
     description.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    description.text = @"Inventory HID providers or check one representative of the three remaining device classes. A standard connection opens and immediately closes; no external-method selectors or HID reports.";
+    description.text = descriptionText;
 
-    self.runButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.runButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.runButton setTitle:@"Run HID check once" forState:UIControlStateNormal];
-    [self.runButton addTarget:self action:@selector(runCheck:) forControlEvents:UIControlEventTouchUpInside];
+    UIButton *startButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    startButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [startButton setTitle:buttonText forState:UIControlStateNormal];
+    [startButton addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    switch (self.testMode) {
+        case HIDTestModeServices: self.runButton = startButton; break;
+        case HIDTestModeInventory: self.inventoryButton = startButton; break;
+        case HIDTestModeManagerClasses: self.classCheckButton = startButton; break;
+        case HIDTestModeFastPath: self.fastPathButton = startButton; break;
+    }
 
     UIButton *copyButton = [UIButton buttonWithType:UIButtonTypeSystem];
     copyButton.translatesAutoresizingMaskIntoConstraints = NO;
     [copyButton setTitle:@"Copy results" forState:UIControlStateNormal];
     [copyButton addTarget:self action:@selector(copyLog:) forControlEvents:UIControlEventTouchUpInside];
-
-    self.inventoryButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.inventoryButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.inventoryButton setTitle:@"Inventory HID providers" forState:UIControlStateNormal];
-    [self.inventoryButton addTarget:self action:@selector(inventoryProviders:) forControlEvents:UIControlEventTouchUpInside];
-
-    self.classCheckButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.classCheckButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.classCheckButton setTitle:@"Check other 3 HID classes once" forState:UIControlStateNormal];
-    [self.classCheckButton addTarget:self action:@selector(checkOtherHIDClasses:) forControlEvents:UIControlEventTouchUpInside];
-
-    self.fastPathButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.fastPathButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.fastPathButton setTitle:@"Check FastPath type 2 once (no selectors)" forState:UIControlStateNormal];
-    [self.fastPathButton addTarget:self action:@selector(checkFastPathOnce:) forControlEvents:UIControlEventTouchUpInside];
 
     self.output = [UITextView new];
     self.output.translatesAutoresizingMaskIntoConstraints = NO;
@@ -152,35 +186,22 @@
     self.output.backgroundColor = UIColor.secondarySystemBackgroundColor;
     self.output.layer.cornerRadius = 10;
     self.output.font = [UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
-    self.output.text = @"No checks have run.\n\nIOHIDFamily CVE-2026-112515 describes a kernel out-of-bounds read, but its affected user-client and reachability are not known. Discovery or an open connection is NOT evidence of that vulnerability.";
+    self.output.text = @"Not run on this page. Existing on-device results are already documented. Do not repeat a test unless there is a specific reason.";
 
     [self.view addSubview:description];
-    [self.view addSubview:self.runButton];
+    [self.view addSubview:startButton];
     [self.view addSubview:copyButton];
-    [self.view addSubview:self.inventoryButton];
-    [self.view addSubview:self.classCheckButton];
-    [self.view addSubview:self.fastPathButton];
     [self.view addSubview:self.output];
-
     UILayoutGuide *guide = self.view.safeAreaLayoutGuide;
     [NSLayoutConstraint activateConstraints:@[
         [description.topAnchor constraintEqualToAnchor:guide.topAnchor constant:16],
         [description.leadingAnchor constraintEqualToAnchor:guide.leadingAnchor constant:16],
         [description.trailingAnchor constraintEqualToAnchor:guide.trailingAnchor constant:-16],
-        [self.runButton.topAnchor constraintEqualToAnchor:description.bottomAnchor constant:16],
-        [self.runButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
-        [copyButton.centerYAnchor constraintEqualToAnchor:self.runButton.centerYAnchor],
+        [startButton.topAnchor constraintEqualToAnchor:description.bottomAnchor constant:16],
+        [startButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
+        [copyButton.centerYAnchor constraintEqualToAnchor:startButton.centerYAnchor],
         [copyButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
-        [self.inventoryButton.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:12],
-        [self.inventoryButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
-        [self.inventoryButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
-        [self.classCheckButton.topAnchor constraintEqualToAnchor:self.inventoryButton.bottomAnchor constant:12],
-        [self.classCheckButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
-        [self.classCheckButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
-        [self.fastPathButton.topAnchor constraintEqualToAnchor:self.classCheckButton.bottomAnchor constant:12],
-        [self.fastPathButton.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
-        [self.fastPathButton.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
-        [self.output.topAnchor constraintEqualToAnchor:self.fastPathButton.bottomAnchor constant:12],
+        [self.output.topAnchor constraintEqualToAnchor:startButton.bottomAnchor constant:12],
         [self.output.leadingAnchor constraintEqualToAnchor:description.leadingAnchor],
         [self.output.trailingAnchor constraintEqualToAnchor:description.trailingAnchor],
         [self.output.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-12]
@@ -447,16 +468,13 @@
 @interface ProbeController : UIViewController
 @property(nonatomic,strong) UITextView *output;
 @property(nonatomic,strong) UIButton *runButton;
-@property(nonatomic,strong) UIButton *examplesButton;
 @property(nonatomic,strong) NSString *lastLog;
 @end
 
 @implementation ProbeController
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"Kernel Service Probe";
-    self.navigationItem.rightBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"File Test" style:UIBarButtonItemStylePlain target:self action:@selector(openFileTest:)];
-    self.navigationItem.leftBarButtonItem = [[UIBarButtonItem alloc] initWithTitle:@"HID Check" style:UIBarButtonItemStylePlain target:self action:@selector(openHIDCheck:)];
+    self.title = @"Kernel Services";
     self.view.backgroundColor = UIColor.systemBackgroundColor;
 
     UILabel *heading = [UILabel new];
@@ -485,15 +503,6 @@
     [copyButton addTarget:self action:@selector(copyLog:) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:copyButton];
 
-    self.examplesButton = [UIButton buttonWithType:UIButtonTypeSystem];
-    self.examplesButton.translatesAutoresizingMaskIntoConstraints = NO;
-    [self.examplesButton setTitle:@"Exploit Research Status" forState:UIControlStateNormal];
-    self.examplesButton.backgroundColor = UIColor.secondarySystemBackgroundColor;
-    self.examplesButton.layer.cornerRadius = 10;
-    [self.examplesButton addTarget:self action:@selector(openResearchStatus:)
-                forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:self.examplesButton];
-
     self.output = [UITextView new];
     self.output.translatesAutoresizingMaskIntoConstraints = NO;
     self.output.editable = NO;
@@ -516,28 +525,11 @@
         [self.runButton.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
         [copyButton.centerYAnchor constraintEqualToAnchor:self.runButton.centerYAnchor],
         [copyButton.trailingAnchor constraintEqualToAnchor:heading.trailingAnchor],
-        [self.examplesButton.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:12],
-        [self.examplesButton.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
-        [self.examplesButton.trailingAnchor constraintEqualToAnchor:heading.trailingAnchor],
-        [self.examplesButton.heightAnchor constraintEqualToConstant:44],
-        [self.output.topAnchor constraintEqualToAnchor:self.examplesButton.bottomAnchor constant:10],
+        [self.output.topAnchor constraintEqualToAnchor:self.runButton.bottomAnchor constant:10],
         [self.output.leadingAnchor constraintEqualToAnchor:heading.leadingAnchor],
         [self.output.trailingAnchor constraintEqualToAnchor:heading.trailingAnchor],
         [self.output.bottomAnchor constraintEqualToAnchor:guide.bottomAnchor constant:-12]
     ]];
-}
-- (void)openResearchStatus:(id)sender {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Direct exploit research"
-        message:@"Confirmed on this device: cross-app app-data writes with Erosion / bad_query; HID FastPath type-2 connection only. Research candidates: Game Center CVE-2026-64740, App Intents CVE-2026-28995, SpringBoard and IOSurface. No verified code injection, kernel read/write or SpringBoard tweak. No partial restore is used."
-        preferredStyle:UIAlertControllerStyleAlert];
-    [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-    [self presentViewController:alert animated:YES completion:nil];
-}
-- (void)openHIDCheck:(id)sender {
-    [self.navigationController pushViewController:[HIDReachabilityController new] animated:YES];
-}
-- (void)openFileTest:(id)sender {
-    [self.navigationController pushViewController:[ContainerChangeController new] animated:YES];
 }
 - (void)copyLog:(id)sender {
     [UIPasteboard generalPasteboard].string = self.lastLog ?: self.output.text;
@@ -586,13 +578,83 @@
 }
 @end
 
+
+@interface ProbeHomeController : UITableViewController
+@end
+@implementation ProbeHomeController
+- (instancetype)init {
+    self = [super initWithStyle:UITableViewStyleInsetGrouped];
+    return self;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title = @"Research Tests";
+    self.tableView.rowHeight = UITableViewAutomaticDimension;
+    self.tableView.estimatedRowHeight = 60;
+}
+- (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
+    return 3;
+}
+- (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
+    return @[@"App data", @"HID / IOHIDFamily", @"Kernel services"][section];
+}
+- (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
+    return section == 0 ? 1 : (section == 1 ? 4 : 1);
+}
+- (NSString *)nameAt:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0) return @"Erosion file-change validation";
+    if (indexPath.section == 2) return @"AppleAVE2 and service opens";
+    return @[@"HID service reachability",
+             @"HID provider inventory",
+             @"HID manager class opens",
+             @"AOPTouch FastPath type 2"][indexPath.row];
+}
+- (NSString *)noteAt:(NSIndexPath *)indexPath {
+    if (indexPath.section == 0) return @"Existing cross-app data-file write validation";
+    if (indexPath.section == 2) return @"One-time service access checks";
+    return @[@"Registered services; manager connection",
+             @"Registry only — no connection opens",
+             @"Standard HID manager client opens",
+             @"User-client type 2 open only — no exploit"][indexPath.row];
+}
+- (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
+    UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ResearchTest"];
+    if (!cell) cell = [[UITableViewCell alloc] initWithStyle:UITableViewCellStyleSubtitle
+                                             reuseIdentifier:@"ResearchTest"];
+    cell.textLabel.text = [self nameAt:indexPath];
+    cell.detailTextLabel.text = [self noteAt:indexPath];
+    cell.detailTextLabel.numberOfLines = 0;
+    cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
+    return cell;
+}
+- (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
+    [tableView deselectRowAtIndexPath:indexPath animated:YES];
+    UIViewController *page;
+    if (indexPath.section == 0) {
+        page = [ContainerChangeController new];
+    } else if (indexPath.section == 2) {
+        page = [ProbeController new];
+    } else {
+        page = [[HIDReachabilityController alloc] initWithTestMode:(HIDTestMode)indexPath.row];
+    }
+    [self.navigationController pushViewController:page animated:YES];
+}
+- (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
+    if (section == 0)
+        return @"An Erosion write to the probe's own Documents file was already verified. This page does not grant cross-app access itself.";
+    if (section == 1)
+        return @"These are historical research checks, not kernel memory access. No tests run automatically.";
+    return @"Do not repeat completed access checks without a new question to test.";
+}
+@end
+
 @interface ProbeAppDelegate : UIResponder <UIApplicationDelegate>
 @property(nonatomic,strong) UIWindow *window;
 @end
 @implementation ProbeAppDelegate
 - (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
     self.window = [[UIWindow alloc] initWithFrame:UIScreen.mainScreen.bounds];
-    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[ProbeController new]];
+    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[ProbeHomeController new]];
     [self.window makeKeyAndVisible];
     return YES;
 }
