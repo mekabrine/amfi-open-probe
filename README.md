@@ -15,6 +15,18 @@ The main screen now offers **Exploit Research Status**, summarizing device-verif
 
 The action in `.github/workflows/build.yml` is still manually dispatched. A source commit does not establish that an IPA has compiled or been installed.
 
+## New research test: CVE-2026-84530 AIO kernel-address disclosure
+
+The app now has a seventh independent page: **Research Tests → Kernel information leaks → AIO kqueue CVE-2026-84530**.
+
+**Why this is different:** Apple's advisory and [the original researcher's case study](https://github.com/vschko/CaseStudies/tree/main/CVE-2026-84530) describe an actual kernel-address disclosure fixed in iPadOS 26.7. The previous HID/IOKit pages only established user-client reachability. This new page makes one bounded, read-only attempt to observe the AIO saved-data leak using a FIFO created inside this app's own temporary container. It operates on the calling process's kqueue metadata. It does **not** request arbitrary system-file paths, install code in other apps, patch SpringBoard, perform kernel writes, or trigger a race.
+
+**Pass condition:** a metadata record for the AIO filter contains a kernel-looking address in its saved-data field, accompanied by an ordinary event-data field. **Fail/unsupported condition:** no qualifying record is returned or the installed app's sandbox restricts the process-information interface; the log identifies the unsupported step. Values must not be described as arbitrary kernel memory access. One action per page visit, no automatic execution or retry.
+
+**Limit:** This is a *research build to test a newly published vulnerability primitive*, not a jailbreak or a tweak injector. Exact-build success on iPad16,1 / 23E261 has **not been established**. A detected kernel pointer might help later kernel exploit research but cannot by itself recolor an unrelated app or modify SpringBoard. No partial restore.
+
+**Build:** The current GitHub Actions workflow is still manual-only. Source underwent static structural checks, but Xcode compilation and on-device execution have not been performed in this environment. Only install and run if you accept normal research-app risks; there is no known panic-only trigger in this test. Do not run the existing crash-focused GPU/AIO UAF PoCs as substitutes.
+
 ## Research Tests navigation
 
 The app opens to **Research Tests**, a list of independent pages. Existing operations are unchanged:
