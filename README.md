@@ -1,3 +1,15 @@
+## Force research runner — four-step implementation (2026-11-01)
+
+The **Research runner → Force** page now provides five independently selectable, bounded research checks: this app's signing entitlement presence, Mach service name lookup (no message sent), IOKit registry service discovery (no user-client methods), app-owned directory existence, and runtime symbol availability. Each shows its relative risk (low), with explicit acknowledgment. Choose 15 minutes, 1 hour, or 6 hours, and serial or concurrent operation. Methods rotate through fixed cases with a 30-second interval; these checks are not exploit brute-forcing, kernel fuzzing, process injection, or privilege escalation.
+
+The single journal is `Documents/force-research.jsonl` (JSON Lines, one JSON object per line). Records include a session ID, attempt ID, method ID, UTC timestamps with milliseconds, Unix milliseconds, event type, and input/result details. A `before` event is written and synchronized with `fsync` before each check; `after` is written and synchronized upon return. Failure to sync the `before` event halts that worker rather than proceeding unlogged. The Force page includes a journal self-test and an iPad share-sheet export button. Avoid deleting or overwriting the app's Documents folder if preserving history is important.
+
+On reopening Force, the app inspects the journal for unfinished sessions and unmatched operations. A changed estimated boot epoch may support a **possible device reboot**; it cannot prove kernel panic or tell whether the app crashed, was suspended, or was killed. Going to background records the transition and requests the workers stop. Keep the app in the foreground and prevent auto-lock for overnight use; iPadOS does not guarantee background execution or automatic restart after a reboot. All operations should be considered **unverified on hardware** until an actual signed IPA has run.
+
+**Building and checking:** run the existing manual [GitHub Actions IPA workflow](../../actions/workflows/build.yml) on `main`. Download the unsigned IPA only if Xcode succeeds, sign it with Feather, and install it. First verify Force's "Test durable before/after logging" and export the JSONL, then try one selected low-risk check for 15 minutes, then concurrent mode. If compilation fails, use the Actions log before installing. No Xcode compiler or GitHub Actions dispatch tool was available in the development environment, so a passing IPA build is **not yet confirmed**.
+
+---
+
 # iPadOS 26.4.2 Research Tests — iPad mini A17 Pro (23E261)
 
 A manually signed research app for iPad mini A17 Pro on iPadOS 26.4.2 (23E261). The home screen separates the previously verified file-change, HID, FastPath and kernel-service checks into dedicated pages. It does not implement a new jailbreak, arbitrary-process tweak, memory-modification primitive or partial restore.
