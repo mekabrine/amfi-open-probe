@@ -770,6 +770,92 @@ cleanup:
 @end
 
 
+
+#pragma mark - Force durable journal (Step 2 of 4)
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+
+@interface ForceLog : NSObject
+@property(nonatomic,readonly) NSString *path;
+@property(nonatomic,readonly) NSString *lastError;
++ (instancetype)shared;
+- (BOOL)record:(NSString *)kind session:(NSString *)session method:(NSString *)method
+      attempt:(NSString *)attempt details:(NSDictionary *)details;
+@end
+
+@implementation ForceLog {
+    int _descriptor;
+    uint64_t _sequence;
+    NSISO8601DateFormatter *_clock;
+    NSString *_lastError;
+}
++ (instancetype)shared {
+    static ForceLog *singleton=nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{singleton=[ForceLog new];});
+    return singleton;
+}
+- (instancetype)init {
+    if (!(self=[super init])) return nil;
+    NSURL *directory=[[[NSFileManager defaultManager]
+        URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask] firstObject];
+    _path=[[directory URLByAppendingPathComponent:@"force-research.jsonl"] path];
+    _clock=[NSISO8601DateFormatter new];
+    _clock.formatOptions=NSISO8601DateFormatWithInternetDateTime |
+                         NSISO8601DateFormatWithFractionalSeconds;
+    _clock.timeZone=[NSTimeZone timeZoneForSecondsFromGMT:0];
+    _descriptor=open(_path.fileSystemRepresentation,O_CREAT|O_APPEND|O_WRONLY,0600);
+    if (_descriptor<0)
+        _lastError=[NSString stringWithFormat:@"Open failed, errno %d",errno];
+    return self;
+}
+- (NSString *)lastError { @synchronized(self) {return _lastError;} }
+- (BOOL)record:(NSString *)kind session:(NSString *)session method:(NSString *)method
+      attempt:(NSString *)attempt details:(NSDictionary *)details {
+    @synchronized(self) {
+        if (_descriptor<0) return NO;
+        NSDate *date=[NSDate date];
+        NSDictionary *entry=@{
+            @"schema":@1, @"sequence":@(++_sequence),
+            @"time": [_clock stringFromDate:date],
+            @"unix_ms":@((long long)(date.timeIntervalSince1970*1000.0)),
+            @"event":kind ?: @"unknown", @"session":session ?: @"",
+            @"method":method ?: @"", @"attempt":attempt ?: @"",
+            @"details":details ?: @{}
+        };
+        NSError *error=nil;
+        NSData *json=[NSJSONSerialization dataWithJSONObject:entry options:0 error:&error];
+        if (!json) {
+            _lastError=error.localizedDescription ?: @"Could not encode JSON";
+            return NO;
+        }
+        NSMutableData *line=[json mutableCopy];
+        const char newline='\n';
+        [line appendBytes:&newline length:1];
+        const uint8_t *bytes=line.bytes;
+        size_t length=line.length;
+        while (length) {
+            ssize_t count=write(_descriptor,bytes,length);
+            if (count<0 && errno==EINTR) continue;
+            if (count<=0) {
+                _lastError=[NSString stringWithFormat:@"Write failed, errno %d",errno];
+                return NO;
+            }
+            bytes+=count;
+            length-=(size_t)count;
+        }
+        if (fsync(_descriptor)!=0) {
+            _lastError=[NSString stringWithFormat:@"Sync failed, errno %d",errno];
+            return NO;
+        }
+        _lastError=nil;
+        return YES;
+    }
+}
+- (void)dealloc { if (_descriptor>=0) close(_descriptor); }
+@end
+
 #pragma mark - Force planning UI (Step 1 of 4)
 
 /* Interface only. No diagnostic workers or privileged calls in this stage. */
@@ -783,6 +869,7 @@ cleanup:
     UISwitch *_concurrent;
     UISwitch *_accepted;
     UILabel *_status;
+    NSString *_previewSession;
 }
 - (UILabel *)addText:(NSString *)text font:(UIFont *)font {
     UILabel *label=[UILabel new];
@@ -816,7 +903,7 @@ cleanup:
         [_content.trailingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.trailingAnchor constant:-18]
     ]];
     [self addText:@"Select research methods" font:[UIFont boldSystemFontOfSize:21]];
-    [self addText:@"Interface preview: no methods run in Step 1. Logging, execution, and restart reports are planned for later commits." font:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
+    [self addText:@"Step 2: journal and export enabled. Execution workers are not installed; preview records only your selected configuration." font:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
     NSArray<NSDictionary *> *methods=@[
       @{@"name":@"Signing entitlement audit",@"risk":@"Low: ordinary API errors; exposes only this app's signing permissions."},
       @{@"name":@"Mach service lookup",@"risk":@"Low: lookup failures and minor resource/battery use; no messages sent."},
@@ -875,10 +962,18 @@ cleanup:
     [ack addArrangedSubview:_accepted];
     [_content addArrangedSubview:ack];
     UIButton *preview=[UIButton buttonWithType:UIButtonTypeSystem];
-    [preview setTitle:@"Review configuration (preview only)" forState:UIControlStateNormal];
+    [preview setTitle:@"Save configuration preview to journal" forState:UIControlStateNormal];
     [preview addTarget:self action:@selector(previewTapped:) forControlEvents:UIControlEventTouchUpInside];
     [_content addArrangedSubview:preview];
-    _status=[self addText:@"No session is running. Step 1 is interface-only." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    UIButton *selfTest=[UIButton buttonWithType:UIButtonTypeSystem];
+    [selfTest setTitle:@"Test durable before/after logging" forState:UIControlStateNormal];
+    [selfTest addTarget:self action:@selector(testJournal:) forControlEvents:UIControlEventTouchUpInside];
+    [_content addArrangedSubview:selfTest];
+    UIButton *share=[UIButton buttonWithType:UIButtonTypeSystem];
+    [share setTitle:@"Export Force JSONL journal" forState:UIControlStateNormal];
+    [share addTarget:self action:@selector(exportJournal:) forControlEvents:UIControlEventTouchUpInside];
+    [_content addArrangedSubview:share];
+    _status=[self addText:[NSString stringWithFormat:@"No execution workers installed.\nJournal: %@",[ForceLog shared].path] font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
 }
 - (void)previewTapped:(id)sender {
     NSMutableArray<NSString *> *selected=[NSMutableArray new];
@@ -894,11 +989,45 @@ cleanup:
         _status.text=@"Select at least one method.";
         return;
     }
-    _status.text=[NSString stringWithFormat:
-       @"Preview saved only on this screen.\nMethods: %@\nDuration: %@\nConcurrent: %@\nNo operation executed.",
-       [selected componentsJoinedByString:@", "],
-       @[@"15 minutes",@"1 hour",@"6 hours"][(NSUInteger)_duration.selectedSegmentIndex],
-       _concurrent.on ? @"yes" : @"no"];
+    NSString *session=NSUUID.UUID.UUIDString;
+    NSDictionary *configuration=@{
+        @"methods":selected,
+        @"duration":@[@"15 minutes",@"1 hour",@"6 hours"][(NSUInteger)_duration.selectedSegmentIndex],
+        @"concurrent":@(_concurrent.on),@"risk_acknowledged":@YES,
+        @"execution_enabled":@NO
+    };
+    BOOL ok=[[ForceLog shared] record:@"configuration_preview" session:session
+        method:@"interface" attempt:@"" details:configuration];
+    _status.text=ok ?
+        [NSString stringWithFormat:@"Saved preview to Force journal.\nSession: %@\nNo operation executed.",session] :
+        [NSString stringWithFormat:@"Journal error: %@",[ForceLog shared].lastError ?: @"unknown"];
+}
+- (void)testJournal:(id)sender {
+    NSString *session=NSUUID.UUID.UUIDString;
+    NSString *attempt=NSUUID.UUID.UUIDString;
+    ForceLog *journal=[ForceLog shared];
+    BOOL before=[journal record:@"before" session:session method:@"journal_self_test"
+        attempt:attempt details:@{@"operation":@"local_log_write_only"}];
+    if (!before) {
+        _status.text=[NSString stringWithFormat:@"BEFORE record could not sync: %@",journal.lastError ?: @"unknown"];
+        return;
+    }
+    BOOL after=[journal record:@"after" session:session method:@"journal_self_test"
+        attempt:attempt details:@{@"result":@"success",@"note":@"No system test was run"}];
+    _status.text=after ?
+        [NSString stringWithFormat:@"Durable before/after records saved.\nAttempt: %@",attempt] :
+        [NSString stringWithFormat:@"AFTER record failed: %@",journal.lastError ?: @"unknown"];
+}
+- (void)exportJournal:(id)sender {
+    NSString *path=[ForceLog shared].path;
+    if (![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        _status.text=@"No journal file exists yet.";
+        return;
+    }
+    UIActivityViewController *activity=[[UIActivityViewController alloc]
+        initWithActivityItems:@[[NSURL fileURLWithPath:path]] applicationActivities:nil];
+    activity.popoverPresentationController.sourceView=(UIView *)sender;
+    [self presentViewController:activity animated:YES completion:nil];
 }
 @end
 
