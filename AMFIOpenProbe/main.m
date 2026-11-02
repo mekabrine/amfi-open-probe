@@ -1022,7 +1022,15 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     NSOperationQueue *_forceQueue;
     NSString *_activeSession;
     BOOL _stopping;
+    BOOL _paused;
     NSInteger _outstanding;
+    NSInteger _completedChecks;
+    NSInteger _failedChecks;
+    NSTimeInterval _startedUptime;
+    NSMutableArray<NSString *> *_recentEvents;
+    UITextView *_liveConsole;
+    UILabel *_liveSummary;
+    UIButton *_pauseButton;
 }
 - (UILabel *)addText:(NSString *)text font:(UIFont *)font {
     UILabel *label=[UILabel new];
@@ -1037,6 +1045,7 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     self.title=@"Force";
     self.view.backgroundColor=UIColor.systemBackgroundColor;
     _choices=[NSMutableArray new];
+    _recentEvents=[NSMutableArray new];
     _scroll=[UIScrollView new];
     _scroll.translatesAutoresizingMaskIntoConstraints=NO;
     [self.view addSubview:_scroll];
@@ -1088,10 +1097,7 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         [_choices addObject:toggle];
         [_content addArrangedSubview:line];
     }
-    [self addText:@"Session duration" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
-    _duration=[[UISegmentedControl alloc] initWithItems:@[@"15 minutes",@"1 hour",@"6 hours"]];
-    _duration.selectedSegmentIndex=0;
-    [_content addArrangedSubview:_duration];
+    [self addText:@"Runs continue until Stop is tapped, the app is backgrounded, or iPadOS terminates it. Pause suspends new checks without ending the session." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     UIStackView *parallel=[UIStackView new];
     parallel.axis=UILayoutConstraintAxisHorizontal;
     parallel.alignment=UIStackViewAlignmentCenter;
@@ -1130,6 +1136,11 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     [start setTitle:@"Start selected bounded checks" forState:UIControlStateNormal];
     [start addTarget:self action:@selector(startForce:) forControlEvents:UIControlEventTouchUpInside];
     [_content addArrangedSubview:start];
+    _pauseButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    [_pauseButton setTitle:@"Pause" forState:UIControlStateNormal];
+    [_pauseButton addTarget:self action:@selector(togglePause:) forControlEvents:UIControlEventTouchUpInside];
+    _pauseButton.enabled=NO;
+    [_content addArrangedSubview:_pauseButton];
     UIButton *stop=[UIButton buttonWithType:UIButtonTypeSystem];
     [stop setTitle:@"Stop selected runs" forState:UIControlStateNormal];
     [stop addTarget:self action:@selector(stopForce:) forControlEvents:UIControlEventTouchUpInside];
@@ -1137,6 +1148,17 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     _recoveryLabel=[self addText:[NSString stringWithFormat:
         @"Last session / recovery:\n%@",[ForceLog shared].recoveryReport]
         font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    _liveSummary=[self addText:@"Idle — 0 completed checks, 0 errors"
+        font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    _liveConsole=[UITextView new];
+    _liveConsole.editable=NO;
+    _liveConsole.selectable=YES;
+    _liveConsole.font=[UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    _liveConsole.backgroundColor=UIColor.secondarySystemBackgroundColor;
+    _liveConsole.layer.cornerRadius=8;
+    [_liveConsole.heightAnchor constraintEqualToConstant:240].active=YES;
+    [_content addArrangedSubview:_liveConsole];
+    _liveConsole.text=@"Live event console will show real completed checks. The full history remains in force-research.jsonl.";
     _status=[self addText:[NSString stringWithFormat:@"Ready. Journal: %@",[ForceLog shared].path]
         font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(forceBackgrounded:)
@@ -1198,16 +1220,21 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     ForceLog *log=[ForceLog shared];
     if (log.lastError) { _status.text=log.lastError; return; }
     NSString *session=NSUUID.UUID.UUIDString;
-    NSArray<NSNumber *> *durations=@[@900,@3600,@21600];
-    NSInteger duration=[durations[(NSUInteger)_duration.selectedSegmentIndex] integerValue];
     if (![log record:@"session_start" session:session method:@"runner" attempt:@""
-             details:@{@"method_indices":chosen,@"duration_seconds":@(duration),
+             details:@{@"method_indices":chosen,@"duration_seconds":@"until_stopped",
                        @"concurrent":@(_concurrent.on)}]) {
         _status.text=log.lastError ?: @"Could not save session record";
         return;
     }
     _activeSession=session;
     _stopping=NO;
+    _paused=NO;
+    _completedChecks=0;
+    _failedChecks=0;
+    _startedUptime=NSProcessInfo.processInfo.systemUptime;
+    [_recentEvents removeAllObjects];
+    _pauseButton.enabled=YES;
+    [_pauseButton setTitle:@"Pause" forState:UIControlStateNormal];
     _outstanding=chosen.count;
     _forceQueue=[NSOperationQueue new];
     _forceQueue.maxConcurrentOperationCount=_concurrent.on ? (NSInteger)chosen.count : 1;
@@ -1216,12 +1243,20 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         NSUInteger method=number.unsignedIntegerValue;
         [_forceQueue addOperationWithBlock:^{
             NSArray<NSString *> *items=ForceItems(method);
-            NSTimeInterval end=NSProcessInfo.processInfo.systemUptime+duration;
             NSInteger iteration=0;
-            while (NSProcessInfo.processInfo.systemUptime<end) {
+            while (YES) {
                 ForcePageController *strongSelf=weakSelf;
                 if (!strongSelf) break;
-                @synchronized(strongSelf) {if (strongSelf->_stopping) break;}
+                BOOL shouldStop=NO, isPaused=NO;
+                @synchronized(strongSelf) {
+                    shouldStop=strongSelf->_stopping;
+                    isPaused=strongSelf->_paused;
+                }
+                if (shouldStop) break;
+                if (isPaused) {
+                    [NSThread sleepForTimeInterval:0.2];
+                    continue;
+                }
                 NSString *item=items[(NSUInteger)iteration%items.count];
                 NSString *attempt=NSUUID.UUID.UUIDString;
                 BOOL saved=[log record:@"before" session:session
@@ -1233,10 +1268,28 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
                     method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
                     attempt:attempt details:@{@"result":result ?: @{},@"iteration":@(iteration)}]) break;
                 iteration++;
+                [[NSOperationQueue mainQueue] addOperationWithBlock:^{
+                    ForcePageController *screen=weakSelf;
+                    if (!screen || ![screen->_activeSession isEqualToString:session]) return;
+                    screen->_completedChecks++;
+                    if (![result[@"status"] isEqualToString:@"ok"]) screen->_failedChecks++;
+                    NSString *line=[NSString stringWithFormat:@"[%@] M%lu  %@  %@",
+                        [[NSISO8601DateFormatter new] stringFromDate:[NSDate date]],
+                        (unsigned long)method,item,result[@"status"] ?: @"unknown"];
+                    [screen->_recentEvents addObject:line];
+                    if (screen->_recentEvents.count>80)
+                        [screen->_recentEvents removeObjectAtIndex:0];
+                    screen->_liveConsole.text=[screen->_recentEvents componentsJoinedByString:@"\n"];
+                    screen->_liveSummary.text=[NSString stringWithFormat:
+                        @"%@ • %ld active workers • %ld checks • %ld errors • %.0f sec elapsed",
+                        screen->_paused ? @"Paused" : @"Running",
+                        (long)screen->_outstanding,(long)screen->_completedChecks,
+                        (long)screen->_failedChecks,
+                        NSProcessInfo.processInfo.systemUptime-screen->_startedUptime];
+                }];
                 // Between checks, minimize load and allow stop within one second.
                 for (int delay=0;delay<30;++delay) {
                     @synchronized(strongSelf) {if (strongSelf->_stopping) break;}
-                    if (NSProcessInfo.processInfo.systemUptime>=end) break;
                     [NSThread sleepForTimeInterval:1.0];
                 }
             }
@@ -1255,11 +1308,25 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
                         attempt:@"" details:@{@"stopped":@(strongSelf->_stopping)}];
                     strongSelf->_activeSession=nil;
                     strongSelf->_forceQueue=nil;
+                    strongSelf->_pauseButton.enabled=NO;
                 }
             }];
         }];
     }
     _status.text=[NSString stringWithFormat:@"Started %@ with %lu method(s).",session,(unsigned long)chosen.count];
+}
+- (void)togglePause:(id)sender {
+    if (!_activeSession) return;
+    @synchronized(self) {
+        _paused=!_paused;
+    }
+    [_pauseButton setTitle:_paused ? @"Resume" : @"Pause" forState:UIControlStateNormal];
+    [[ForceLog shared] record:_paused ? @"paused" : @"resumed"
+        session:_activeSession method:@"runner" attempt:@""
+        details:@{@"completed_checks":@(_completedChecks)}];
+    _liveSummary.text=[NSString stringWithFormat:@"%@ • %ld completed • %ld errors",
+        _paused ? @"Paused" : @"Running",
+        (long)_completedChecks,(long)_failedChecks];
 }
 - (void)forceBackgrounded:(NSNotification *)notification {
     if (_activeSession) {
@@ -1276,7 +1343,8 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 - (void)stopForce:(id)sender {
-    @synchronized(self) {_stopping=YES;}
+    @synchronized(self) {_stopping=YES; _paused=NO;}
+    _pauseButton.enabled=NO;
     if (_activeSession)
         [[ForceLog shared] record:@"stop_requested" session:_activeSession
             method:@"runner" attempt:@"" details:@{}];
@@ -1321,7 +1389,7 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     if (indexPath.section == 0) return @"Erosion file-change validation";
     if (indexPath.section == 2) return @"AppleAVE2 and service opens";
     if (indexPath.section == 3) return @"AIO kqueue CVE-2026-84530";
-    if (indexPath.section == 4) return @"Force (interface preview)";
+    if (indexPath.section == 4) return @"Force — live diagnostics";
     return @[@"HID service reachability",
              @"HID provider inventory",
              @"HID manager class opens",
@@ -1331,7 +1399,7 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     if (indexPath.section == 0) return @"Existing cross-app data-file write validation";
     if (indexPath.section == 2) return @"One-time service access checks";
     if (indexPath.section == 3) return @"AIO work-entry heap pointer disclosure, read-only";
-    if (indexPath.section == 4) return @"Method selection, risks, duration and concurrency settings";
+    if (indexPath.section == 4) return @"Start, pause/resume, stop, live results and JSONL export";
     return @[@"Registered services; manager connection",
              @"Registry only — no connection opens",
              @"Standard HID manager client opens",
