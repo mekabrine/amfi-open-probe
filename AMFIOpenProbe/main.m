@@ -2176,6 +2176,7 @@ static NSDictionary *GameKitAuthenticationBaseline(void) {
     UIButton *_allButton;
     UIButton *_copyButton;
     UIButton *_gameKitButton;
+    UIButton *_authenticateButton;
     NSString *_latestJSON;
 }
 - (NSArray<NSDictionary *> *)updatedTests {
@@ -2227,6 +2228,10 @@ static NSDictionary *GameKitAuthenticationBaseline(void) {
     [_gameKitButton setTitle:@"NEW • Run GameKit service request" forState:UIControlStateNormal];
     [_gameKitButton addTarget:self action:@selector(runGameKitRequest:) forControlEvents:UIControlEventTouchUpInside];
     [stack addArrangedSubview:_gameKitButton];
+    _authenticateButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    [_authenticateButton setTitle:@"NEW • Authenticate Game Center" forState:UIControlStateNormal];
+    [_authenticateButton addTarget:self action:@selector(authenticateGameCenter:) forControlEvents:UIControlEventTouchUpInside];
+    [stack addArrangedSubview:_authenticateButton];
     _copyButton=[UIButton buttonWithType:UIButtonTypeSystem];
     [_copyButton setTitle:@"Copy All Results" forState:UIControlStateNormal];
     _copyButton.enabled=NO;
@@ -2239,6 +2244,68 @@ static NSDictionary *GameKitAuthenticationBaseline(void) {
     _output.layer.cornerRadius=10;
     [stack addArrangedSubview:_output];
     _output.text=@"Ready. Nine safe checks including public GameKit authentication state. Copy All Results produces one JSON report. Untested exploit candidates are NOT executed.";
+}
+- (void)authenticateGameCenter:(id)sender {
+    _authenticateButton.enabled=NO;
+    void *framework=dlopen("/System/Library/Frameworks/GameKit.framework/GameKit",RTLD_LAZY);
+    Class playerClass=NSClassFromString(@"GKLocalPlayer");
+    SEL getPlayer=NSSelectorFromString(@"localPlayer");
+    id player=(playerClass && [playerClass respondsToSelector:getPlayer]) ?
+        ((id (*)(id,SEL))objc_msgSend)(playerClass,getPlayer) : nil;
+    SEL setHandler=NSSelectorFromString(@"setAuthenticateHandler:");
+    if (!player || ![player respondsToSelector:setHandler]) {
+        _authenticateButton.enabled=YES;
+        _output.text=@"Game Center authentication API unavailable.";
+        if (framework) dlclose(framework);
+        return;
+    }
+    NSString *session=NSUUID.UUID.UUIDString, *attempt=NSUUID.UUID.UUIDString;
+    ForceLog *log=[ForceLog shared];
+    if (![log record:@"before" session:session method:@"gamekit_auth" attempt:attempt
+             details:@{@"case":@"authenticateHandler",@"scenario":@"public_gamekit_auth"}]) {
+        _authenticateButton.enabled=YES;
+        _output.text=[NSString stringWithFormat:@"Journal error: %@",log.lastError ?: @"unknown"];
+        if (framework) dlclose(framework);
+        return;
+    }
+    __weak typeof(self) weakSelf=self;
+    __block BOOL presented=NO;
+    void (^handler)(UIViewController *, NSError *)=^(UIViewController *loginView,NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            GameCenterEvidenceController *screen=weakSelf;
+            if (!screen) return;
+            if (loginView && !presented) {
+                presented=YES;
+                [screen presentViewController:loginView animated:YES completion:nil];
+                screen->_output.text=@"Game Center sign-in was requested. Finish or cancel the Apple sign-in UI; an authentication outcome will be logged when GameKit calls back.";
+                return;
+            }
+            SEL check=NSSelectorFromString(@"isAuthenticated");
+            BOOL authenticated=[player respondsToSelector:check] ?
+                ((BOOL (*)(id,SEL))objc_msgSend)(player,check) : NO;
+            NSDictionary *result=@{
+                @"status":authenticated ? @"authenticated" : (error ? @"api_error" : @"not_authenticated"),
+                @"authenticated":@(authenticated),
+                @"error_domain":error.domain ?: [NSNull null],
+                @"error_code":error ? @(error.code) : [NSNull null],
+                @"login_ui_shown":@(presented),
+                @"note":@"Public GameKit login only; not evidence of sandbox escape or privileged access"
+            };
+            BOOL logged=[log record:@"after" session:session method:@"gamekit_auth"
+                attempt:attempt details:@{@"scenario":@"public_gamekit_auth",@"result":result}];
+            NSDictionary *report=@{@"suite":@"gamekit_authentication",
+                @"session":session,@"environment":ForceEnvironmentSnapshot(),
+                @"result":result,@"journal_saved":@(logged),@"exploit_verified":@NO};
+            NSData *json=[NSJSONSerialization dataWithJSONObject:report
+                options:NSJSONWritingPrettyPrinted error:nil];
+            screen->_latestJSON=[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+            screen->_output.text=screen->_latestJSON ?: @"Cannot format authentication result.";
+            screen->_copyButton.enabled=screen->_latestJSON.length>0;
+            screen->_authenticateButton.enabled=YES;
+            if (framework) dlclose(framework);
+        });
+    };
+    ((void (*)(id,SEL,id))objc_msgSend)(player,setHandler,[handler copy]);
 }
 - (void)runGameKitRequest:(id)sender {
     _gameKitButton.enabled=NO;
