@@ -936,6 +936,8 @@ cleanup:
 #pragma mark - Force bounded diagnostic workers (Step 3 of 4)
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
+#include <sys/utsname.h>
 static NSArray<NSString *> *ForceItems(NSUInteger method) {
     switch(method) {
         case 0: return @[@"com.apple.developer.game-center",@"get-task-allow",
@@ -944,9 +946,11 @@ static NSArray<NSString *> *ForceItems(NSUInteger method) {
                          @"com.apple.backboardd",@"com.apple.lsd"];
         case 2: return @[@"IOSurfaceRoot",@"AOPTouchHIDDriver",
                          @"IOMobileFramebuffer",@"AppleAVE2Driver"];
-        case 3: return @[@"documents",@"bundle",@"temporary"];
+        case 3: return @[@"documents",@"bundle",@"temporary",
+                          @"system_library",@"usr_lib",@"mobile_library"];
         case 4: return @[@"proc_pidfdinfo",@"sandbox_check",
-                         @"task_for_pid",@"bootstrap_look_up"];
+                         @"task_for_pid",@"bootstrap_look_up",@"SecTaskCreateFromSelf"];
+        case 5: return @[@"thermal",@"low_power",@"memory_peak",@"cpu_usage"];
     }
     return @[];
 }
@@ -1019,30 +1023,126 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         if (bootstrap!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(),bootstrap);
         if (service!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(),service);
         return @{@"status":@"ok",@"return_code":@(kr),
-                 @"note":@"Name lookup only; no request sent"};
+                 @"lookup_success":@(kr==KERN_SUCCESS && service!=MACH_PORT_NULL),
+                 @"note":@"Bootstrap name resolution only; service authorization not tested"};
     }
     if (method==2) {
         CFMutableDictionaryRef match=IOServiceMatching(item.UTF8String);
         if (!match) return @{@"status":@"unavailable"};
         io_service_t object=IOServiceGetMatchingService(kIOMainPortDefault,match);
         BOOL exists=object!=IO_OBJECT_NULL;
-        if (object!=IO_OBJECT_NULL) IOObjectRelease(object);
+        if (object==IO_OBJECT_NULL)
+            return @{@"status":@"ok",@"service_registered":@NO,
+                     @"note":@"No user-client connection attempted"};
+        io_name_t className={0};
+        kern_return_t classReturn=IOObjectGetClass(object,className);
+        io_string_t registryPath={0};
+        kern_return_t pathReturn=IORegistryEntryGetPath(object,kIOServicePlane,registryPath);
+        io_registry_entry_t parent=IO_OBJECT_NULL;
+        kern_return_t parentReturn=IORegistryEntryGetParentEntry(object,kIOServicePlane,&parent);
+        io_name_t parentClass={0};
+        if (parentReturn==KERN_SUCCESS && parent!=IO_OBJECT_NULL) {
+            IOObjectGetClass(parent,parentClass);
+            IOObjectRelease(parent);
+        }
+        IOObjectRelease(object);
         return @{@"status":@"ok",@"service_registered":@(exists),
-                 @"note":@"Registry lookup only; no connection opened"};
+                 @"service_class":classReturn==KERN_SUCCESS ?
+                     [NSString stringWithUTF8String:className] : @"unavailable",
+                 @"parent_class":parentReturn==KERN_SUCCESS ?
+                     [NSString stringWithUTF8String:parentClass] : @"unavailable",
+                 @"registry_path":pathReturn==KERN_SUCCESS ?
+                     [NSString stringWithUTF8String:registryPath] : @"unavailable",
+                 @"note":@"Registry metadata only; no user-client connection attempted"};
     }
     if (method==3) {
-        NSString *location=[item isEqualToString:@"documents"] ?
-          [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES) firstObject] :
-          ([item isEqualToString:@"bundle"] ? NSBundle.mainBundle.bundlePath : NSTemporaryDirectory());
-        BOOL exists=[[NSFileManager defaultManager] fileExistsAtPath:location];
-        return @{@"status":@"ok",@"directory_exists":@(exists),
-                 @"note":@"App-owned paths only; no reads or writes"};
+        NSDictionary<NSString *,NSString *> *paths=@{
+            @"documents":[NSSearchPathForDirectoriesInDomains(
+                NSDocumentDirectory,NSUserDomainMask,YES) firstObject] ?: @"",
+            @"bundle":NSBundle.mainBundle.bundlePath ?: @"",
+            @"temporary":NSTemporaryDirectory() ?: @"",
+            @"system_library":@"/System/Library",
+            @"usr_lib":@"/usr/lib",
+            @"mobile_library":@"/var/mobile/Library"
+        };
+        NSString *location=paths[item] ?: @"";
+        if (!location.length) return @{@"status":@"unavailable"};
+        struct stat fileStat={0};
+        errno=0;
+        int statCode=stat(location.fileSystemRepresentation,&fileStat);
+        int statError=statCode==0 ? 0 : errno;
+        errno=0;
+        int readCode=access(location.fileSystemRepresentation,R_OK);
+        int readError=readCode==0 ? 0 : errno;
+        errno=0;
+        int writeCode=access(location.fileSystemRepresentation,W_OK);
+        int writeError=writeCode==0 ? 0 : errno;
+        return @{@"status":@"ok",@"stat_success":@(statCode==0),
+                 @"stat_errno":@(statError),@"read_access":@(readCode==0),
+                 @"read_errno":@(readError),@"write_access":@(writeCode==0),
+                 @"write_errno":@(writeError),
+                 @"path_category":item,
+                 @"note":@"Metadata and access(2) checks only; no file contents read or writes attempted; POSIX access is not a sandbox bypass proof"};
     }
     if (method==4) {
-        return @{@"status":@"ok",@"symbol_exported":@(dlsym(RTLD_DEFAULT,item.UTF8String)!=NULL),
+        void *symbol=dlsym(RTLD_DEFAULT,item.UTF8String);
+        Dl_info source={0};
+        BOOL mapped=symbol && dladdr(symbol,&source)!=0;
+        return @{@"status":@"ok",@"symbol_exported":@(symbol!=NULL),
+                 @"image_name":mapped && source.dli_fname ?
+                     [[NSString stringWithUTF8String:source.dli_fname] lastPathComponent] : @"unavailable",
                  @"note":@"Symbol presence only; function not called"};
     }
+    if (method==5) {
+        NSProcessInfo *process=NSProcessInfo.processInfo;
+        if ([item isEqualToString:@"thermal"])
+            return @{@"status":@"ok",@"thermal_state":@((NSInteger)process.thermalState)};
+        if ([item isEqualToString:@"low_power"])
+            return @{@"status":@"ok",@"low_power_mode":@(process.isLowPowerModeEnabled)};
+        struct rusage usage={0};
+        errno=0;
+        int code=getrusage(RUSAGE_SELF,&usage);
+        if (code!=0) return @{@"status":@"unavailable",@"errno":@(errno)};
+        if ([item isEqualToString:@"memory_peak"])
+            return @{@"status":@"ok",@"peak_resident_native_units":@((long long)usage.ru_maxrss),
+                     @"note":@"ru_maxrss units are platform-dependent"};
+        if ([item isEqualToString:@"cpu_usage"]) {
+            long long userUs=(long long)usage.ru_utime.tv_sec*1000000LL+usage.ru_utime.tv_usec;
+            long long systemUs=(long long)usage.ru_stime.tv_sec*1000000LL+usage.ru_stime.tv_usec;
+            return @{@"status":@"ok",@"user_cpu_us":@(userUs),
+                     @"system_cpu_us":@(systemUs)};
+        }
+    }
     return @{@"status":@"unsupported"};
+}
+
+
+static NSDictionary *ForceStableState(NSUInteger method, NSDictionary *result) {
+    NSMutableDictionary *state=[result mutableCopy];
+    [state removeObjectForKey:@"note"];
+    if (method==5) {
+        // Resource counters naturally change; only thermal/power transitions are significant.
+        [state removeObjectForKey:@"peak_resident_native_units"];
+        [state removeObjectForKey:@"user_cpu_us"];
+        [state removeObjectForKey:@"system_cpu_us"];
+    }
+    return state;
+}
+static NSDictionary *ForceEnvironmentSnapshot(void) {
+    struct utsname machine={0};
+    int code=uname(&machine);
+    UIDevice *device=UIDevice.currentDevice;
+    NSBundle *bundle=NSBundle.mainBundle;
+    return @{
+        @"system":device.systemName ?: @"unknown",
+        @"os_version":device.systemVersion ?: @"unknown",
+        @"kernel_release":code==0 ? [NSString stringWithUTF8String:machine.release] : @"unknown",
+        @"device_machine":code==0 ? [NSString stringWithUTF8String:machine.machine] : @"unknown",
+        @"bundle_id":bundle.bundleIdentifier ?: @"unknown",
+        @"app_version":[bundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"unknown",
+        @"session_type":@"bounded_read_only_diagnostics",
+        @"scope":@"No kernel exploitation, privileged code injection or sandbox escape attempted"
+    };
 }
 
 #pragma mark - Force planning UI (Step 1 of 4)
