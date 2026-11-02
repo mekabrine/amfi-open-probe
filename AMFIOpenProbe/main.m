@@ -895,7 +895,11 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         Lookup lookup=(Lookup)dlsym(RTLD_DEFAULT,"bootstrap_look_up");
         if (!lookup) return @{@"status":@"unavailable"};
         mach_port_t service=MACH_PORT_NULL;
-        kern_return_t kr=lookup(bootstrap_port,item.UTF8String,&service);
+        mach_port_t bootstrap=MACH_PORT_NULL;
+        kern_return_t kr=task_get_special_port(mach_task_self(),TASK_BOOTSTRAP_PORT,&bootstrap);
+        if (kr==KERN_SUCCESS && bootstrap!=MACH_PORT_NULL)
+            kr=lookup(bootstrap,item.UTF8String,&service);
+        if (bootstrap!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(),bootstrap);
         if (service!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(),service);
         return @{@"status":@"ok",@"return_code":@(kr),
                  @"note":@"Name lookup only; no request sent"};
