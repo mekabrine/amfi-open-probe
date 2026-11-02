@@ -2175,6 +2175,7 @@ static NSDictionary *GameKitAuthenticationBaseline(void) {
     UITextView *_output;
     UIButton *_allButton;
     UIButton *_copyButton;
+    UIButton *_gameKitButton;
     NSString *_latestJSON;
 }
 - (NSArray<NSDictionary *> *)updatedTests {
@@ -2222,6 +2223,10 @@ static NSDictionary *GameKitAuthenticationBaseline(void) {
     [_allButton setTitle:@"Test All Updated" forState:UIControlStateNormal];
     [_allButton addTarget:self action:@selector(testAllUpdated:) forControlEvents:UIControlEventTouchUpInside];
     [stack addArrangedSubview:_allButton];
+    _gameKitButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    [_gameKitButton setTitle:@"NEW • Run GameKit service request" forState:UIControlStateNormal];
+    [_gameKitButton addTarget:self action:@selector(runGameKitRequest:) forControlEvents:UIControlEventTouchUpInside];
+    [stack addArrangedSubview:_gameKitButton];
     _copyButton=[UIButton buttonWithType:UIButtonTypeSystem];
     [_copyButton setTitle:@"Copy All Results" forState:UIControlStateNormal];
     _copyButton.enabled=NO;
@@ -2234,6 +2239,62 @@ static NSDictionary *GameKitAuthenticationBaseline(void) {
     _output.layer.cornerRadius=10;
     [stack addArrangedSubview:_output];
     _output.text=@"Ready. Nine safe checks including public GameKit authentication state. Copy All Results produces one JSON report. Untested exploit candidates are NOT executed.";
+}
+- (void)runGameKitRequest:(id)sender {
+    _gameKitButton.enabled=NO;
+    _output.text=@"Requesting the default leaderboard identifier through public GameKit. No private daemon messages or privileged file operations.";
+    void *framework=dlopen("/System/Library/Frameworks/GameKit.framework/GameKit",RTLD_LAZY);
+    Class playerClass=NSClassFromString(@"GKLocalPlayer");
+    SEL getPlayer=NSSelectorFromString(@"localPlayer");
+    id player=(playerClass && [playerClass respondsToSelector:getPlayer]) ?
+        ((id (*)(id,SEL))objc_msgSend)(playerClass,getPlayer) : nil;
+    SEL operation=NSSelectorFromString(@"loadDefaultLeaderboardIdentifierWithCompletionHandler:");
+    if (!player || ![player respondsToSelector:operation]) {
+        _output.text=@"GameKit operation unavailable on this device or signing configuration.";
+        _gameKitButton.enabled=YES;
+        if (framework) dlclose(framework);
+        return;
+    }
+    NSString *session=NSUUID.UUID.UUIDString, *attempt=NSUUID.UUID.UUIDString;
+    ForceLog *log=[ForceLog shared];
+    if (![log record:@"before" session:session method:@"gamekit_api" attempt:attempt
+             details:@{@"case":@"loadDefaultLeaderboardIdentifier",
+                       @"scenario":@"public_gamekit_request"}]) {
+        _output.text=[NSString stringWithFormat:@"Journal error: %@",log.lastError ?: @"unknown"];
+        _gameKitButton.enabled=YES;
+        if (framework) dlclose(framework);
+        return;
+    }
+    NSTimeInterval started=NSProcessInfo.processInfo.systemUptime;
+    __weak typeof(self) weakSelf=self;
+    void (^callback)(NSString *,NSError *)=^(NSString *identifier,NSError *error) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            GameCenterEvidenceController *screen=weakSelf;
+            if (!screen) return;
+            NSDictionary *result=@{
+                @"status":error ? @"api_error" : @"api_completed",
+                @"error_domain":error.domain ?: [NSNull null],
+                @"error_code":error ? @(error.code) : [NSNull null],
+                @"identifier_returned":@(identifier.length>0),
+                @"latency_ms":@((NSInteger)((NSProcessInfo.processInfo.systemUptime-started)*1000)),
+                @"note":@"Public GameKit request; no sandbox escape or code execution tested"
+            };
+            BOOL logged=[log record:@"after" session:session method:@"gamekit_api"
+                attempt:attempt details:@{@"case":@"loadDefaultLeaderboardIdentifier",
+                                          @"scenario":@"public_gamekit_request",@"result":result}];
+            NSDictionary *report=@{@"suite":@"gamekit_service_request",
+                @"session":session,@"environment":ForceEnvironmentSnapshot(),
+                @"journal_saved":@(logged),@"result":result,@"exploit_verified":@NO};
+            NSData *json=[NSJSONSerialization dataWithJSONObject:report
+                options:NSJSONWritingPrettyPrinted error:nil];
+            screen->_latestJSON=[[NSString alloc] initWithData:json encoding:NSUTF8StringEncoding];
+            screen->_output.text=screen->_latestJSON ?: @"Could not format result.";
+            screen->_copyButton.enabled=screen->_latestJSON.length>0;
+            screen->_gameKitButton.enabled=YES;
+            if (framework) dlclose(framework);
+        });
+    };
+    ((void (*)(id,SEL,id))objc_msgSend)(player,operation,[callback copy]);
 }
 - (void)copyResults:(id)sender {
     if (!_latestJSON.length) return;
