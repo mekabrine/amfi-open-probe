@@ -769,6 +769,139 @@ cleanup:
 }
 @end
 
+
+#pragma mark - Force planning UI (Step 1 of 4)
+
+/* Interface only. No diagnostic workers or privileged calls in this stage. */
+@interface ForcePageController : UIViewController
+@end
+@implementation ForcePageController {
+    UIScrollView *_scroll;
+    UIStackView *_content;
+    NSMutableArray<UISwitch *> *_choices;
+    UISegmentedControl *_duration;
+    UISwitch *_concurrent;
+    UISwitch *_accepted;
+    UILabel *_status;
+}
+- (UILabel *)addText:(NSString *)text font:(UIFont *)font {
+    UILabel *label=[UILabel new];
+    label.text=text;
+    label.font=font;
+    label.numberOfLines=0;
+    [_content addArrangedSubview:label];
+    return label;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title=@"Force";
+    self.view.backgroundColor=UIColor.systemBackgroundColor;
+    _choices=[NSMutableArray new];
+    _scroll=[UIScrollView new];
+    _scroll.translatesAutoresizingMaskIntoConstraints=NO;
+    [self.view addSubview:_scroll];
+    _content=[UIStackView new];
+    _content.axis=UILayoutConstraintAxisVertical;
+    _content.spacing=16;
+    _content.translatesAutoresizingMaskIntoConstraints=NO;
+    [_scroll addSubview:_content];
+    [NSLayoutConstraint activateConstraints:@[
+        [_scroll.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor],
+        [_scroll.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor],
+        [_scroll.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
+        [_scroll.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor],
+        [_content.topAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.topAnchor constant:18],
+        [_content.bottomAnchor constraintEqualToAnchor:_scroll.contentLayoutGuide.bottomAnchor constant:-24],
+        [_content.leadingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.leadingAnchor constant:18],
+        [_content.trailingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.trailingAnchor constant:-18]
+    ]];
+    [self addText:@"Select research methods" font:[UIFont boldSystemFontOfSize:21]];
+    [self addText:@"Interface preview: no methods run in Step 1. Logging, execution, and restart reports are planned for later commits." font:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
+    NSArray<NSDictionary *> *methods=@[
+      @{@"name":@"Signing entitlement audit",@"risk":@"Low: ordinary API errors; exposes only this app's signing permissions."},
+      @{@"name":@"Mach service lookup",@"risk":@"Low: lookup failures and minor resource/battery use; no messages sent."},
+      @{@"name":@"IOKit registry inventory",@"risk":@"Low: discovery-only; no user-client selectors or malformed buffers."},
+      @{@"name":@"Filesystem permission matrix",@"risk":@"Low: file access checks only; no writes or restoration operations."},
+      @{@"name":@"Runtime symbol availability",@"risk":@"Low: runtime symbol checks; no private APIs invoked."}
+    ];
+    for (NSDictionary *item in methods) {
+        UIStackView *line=[UIStackView new];
+        line.axis=UILayoutConstraintAxisHorizontal;
+        line.spacing=12;
+        line.alignment=UIStackViewAlignmentCenter;
+        UIStackView *titles=[UIStackView new];
+        titles.axis=UILayoutConstraintAxisVertical;
+        titles.spacing=4;
+        UILabel *name=[UILabel new];
+        name.text=item[@"name"];
+        name.font=[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline];
+        name.numberOfLines=0;
+        UILabel *risk=[UILabel new];
+        risk.text=[NSString stringWithFormat:@"Possible risks: %@",item[@"risk"]];
+        risk.numberOfLines=0;
+        risk.font=[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
+        [titles addArrangedSubview:name];
+        [titles addArrangedSubview:risk];
+        [line addArrangedSubview:titles];
+        UISwitch *toggle=[UISwitch new];
+        [line addArrangedSubview:toggle];
+        [_choices addObject:toggle];
+        [_content addArrangedSubview:line];
+    }
+    [self addText:@"Session duration" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    _duration=[[UISegmentedControl alloc] initWithItems:@[@"15 minutes",@"1 hour",@"6 hours"]];
+    _duration.selectedSegmentIndex=0;
+    [_content addArrangedSubview:_duration];
+    UIStackView *parallel=[UIStackView new];
+    parallel.axis=UILayoutConstraintAxisHorizontal;
+    parallel.alignment=UIStackViewAlignmentCenter;
+    UILabel *parallelLabel=[UILabel new];
+    parallelLabel.text=@"Run selected methods concurrently";
+    parallelLabel.numberOfLines=0;
+    [parallel addArrangedSubview:parallelLabel];
+    _concurrent=[UISwitch new];
+    [parallel addArrangedSubview:_concurrent];
+    [_content addArrangedSubview:parallel];
+    [self addText:@"Risk acknowledgment" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    [self addText:@"Even non-destructive diagnostics can cause unexpected behavior. Future tests may require additional risk warnings. A backup reduces potential data loss but cannot guarantee against a restore-required failure. Device panic and abnormal termination cannot always be distinguished by an app." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    UIStackView *ack=[UIStackView new];
+    ack.axis=UILayoutConstraintAxisHorizontal;
+    ack.alignment=UIStackViewAlignmentCenter;
+    UILabel *ackText=[UILabel new];
+    ackText.text=@"I have reviewed these risks";
+    ackText.numberOfLines=0;
+    [ack addArrangedSubview:ackText];
+    _accepted=[UISwitch new];
+    [ack addArrangedSubview:_accepted];
+    [_content addArrangedSubview:ack];
+    UIButton *preview=[UIButton buttonWithType:UIButtonTypeSystem];
+    [preview setTitle:@"Review configuration (preview only)" forState:UIControlStateNormal];
+    [preview addTarget:self action:@selector(previewTapped:) forControlEvents:UIControlEventTouchUpInside];
+    [_content addArrangedSubview:preview];
+    _status=[self addText:@"No session is running. Step 1 is interface-only." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+}
+- (void)previewTapped:(id)sender {
+    NSMutableArray<NSString *> *selected=[NSMutableArray new];
+    NSArray *names=@[@"Signing entitlement audit",@"Mach service lookup",
+       @"IOKit registry inventory",@"Filesystem permission matrix",@"Runtime symbol availability"];
+    for (NSUInteger i=0;i<_choices.count;i++)
+        if (_choices[i].on) [selected addObject:names[i]];
+    if (!_accepted.on) {
+        _status.text=@"Review and acknowledge the risks before preparing a session.";
+        return;
+    }
+    if (!selected.count) {
+        _status.text=@"Select at least one method.";
+        return;
+    }
+    _status.text=[NSString stringWithFormat:
+       @"Preview saved only on this screen.\nMethods: %@\nDuration: %@\nConcurrent: %@\nNo operation executed.",
+       [selected componentsJoinedByString:@", "],
+       @[@"15 minutes",@"1 hour",@"6 hours"][(NSUInteger)_duration.selectedSegmentIndex],
+       _concurrent.on ? @"yes" : @"no"];
+}
+@end
+
 @interface ProbeHomeController : UITableViewController
 @end
 @implementation ProbeHomeController
@@ -783,10 +916,10 @@ cleanup:
     self.tableView.estimatedRowHeight = 60;
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 4;
+    return 5;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @[@"App data", @"HID / IOHIDFamily", @"Kernel services", @"Kernel information leaks"][section];
+    return @[@"App data", @"HID / IOHIDFamily", @"Kernel services", @"Kernel information leaks", @"Research runner"][section];
 }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
     return section == 0 ? 1 : (section == 1 ? 4 : 1);
@@ -795,6 +928,7 @@ cleanup:
     if (indexPath.section == 0) return @"Erosion file-change validation";
     if (indexPath.section == 2) return @"AppleAVE2 and service opens";
     if (indexPath.section == 3) return @"AIO kqueue CVE-2026-84530";
+    if (indexPath.section == 4) return @"Force (interface preview)";
     return @[@"HID service reachability",
              @"HID provider inventory",
              @"HID manager class opens",
@@ -804,6 +938,7 @@ cleanup:
     if (indexPath.section == 0) return @"Existing cross-app data-file write validation";
     if (indexPath.section == 2) return @"One-time service access checks";
     if (indexPath.section == 3) return @"AIO work-entry heap pointer disclosure, read-only";
+    if (indexPath.section == 4) return @"Method selection, risks, duration and concurrency settings";
     return @[@"Registered services; manager connection",
              @"Registry only — no connection opens",
              @"Standard HID manager client opens",
@@ -828,6 +963,8 @@ cleanup:
         page = [ProbeController new];
     } else if (indexPath.section == 3) {
         page = [AIODisclosureController new];
+    } else if (indexPath.section == 4) {
+        page = [ForcePageController new];
     } else {
         page = [[HIDReachabilityController alloc] initWithTestMode:(HIDTestMode)indexPath.row];
     }
@@ -839,7 +976,8 @@ cleanup:
     if (section == 1)
         return @"These are historical research checks, not kernel memory access. No tests run automatically.";
     if (section == 2) return @"Do not repeat completed access checks without a new question to test.";
-    return @"CVE-2026-84530 leaks the address of an aio_workq_entry heap allocation, not a kernel image address. This does not enable process injection. No stress loops.";
+    if (section == 3) return @"CVE-2026-84530 reveals an AIO heap allocation address, not code execution.";
+    return @"Force Step 1: interface only. It does not run diagnostics or fuzz kernel interfaces.";
 }
 @end
 
