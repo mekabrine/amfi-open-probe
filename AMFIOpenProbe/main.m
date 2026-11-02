@@ -2,6 +2,7 @@
 #import <Foundation/Foundation.h>
 #import <IOKit/IOKitLib.h>
 #import <mach/mach.h>
+#import <objc/message.h>
 
 
 @interface ContainerChangeController : UIViewController
@@ -2145,6 +2146,29 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
 
 
 
+
+// Ordinary public GameKit API observation. No private gamed messages are sent.
+static NSDictionary *GameKitAuthenticationBaseline(void) {
+    void *framework=dlopen("/System/Library/Frameworks/GameKit.framework/GameKit",RTLD_LAZY);
+    if (!framework) return @{@"status":@"unavailable",@"reason":@"GameKit framework could not load"};
+    Class playerClass=NSClassFromString(@"GKLocalPlayer");
+    SEL localPlayerSelector=NSSelectorFromString(@"localPlayer");
+    SEL authSelector=NSSelectorFromString(@"isAuthenticated");
+    if (!playerClass || ![playerClass respondsToSelector:localPlayerSelector]) {
+        dlclose(framework);
+        return @{@"status":@"unavailable",@"reason":@"GKLocalPlayer unavailable"};
+    }
+    id player=((id (*)(id,SEL))objc_msgSend)(playerClass,localPlayerSelector);
+    BOOL supported=player && [player respondsToSelector:authSelector];
+    BOOL authenticated=supported ? ((BOOL (*)(id,SEL))objc_msgSend)(player,authSelector) : NO;
+    NSDictionary *result=@{@"status":supported ? @"ok" : @"unavailable",
+        @"framework_loaded":@YES,@"local_player_available":@(player!=nil),
+        @"authenticated":supported ? @(authenticated) : [NSNull null],
+        @"note":@"Public GameKit authentication state only; no service operation or sandbox escape verified"};
+    dlclose(framework);
+    return result;
+}
+
 @interface GameCenterEvidenceController : UIViewController
 @end
 @implementation GameCenterEvidenceController {
@@ -2161,6 +2185,8 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
           @"method":@0, @"case":@"get-task-allow"},
         @{@"track":@"Game Center", @"name":@"gamed send-right lookup",
           @"method":@1, @"case":@"com.apple.gamed"},
+        @{@"track":@"GameKit", @"name":@"Public GKLocalPlayer authentication state",
+          @"method":@6, @"case":@"gk_local_player"},
         @{@"track":@"AOPTouch", @"name":@"AOPTouch registry reachability",
           @"method":@2, @"case":@"AOPTouchHIDDriver"},
         @{@"track":@"IOSurface", @"name":@"IOSurface registry reachability",
@@ -2207,7 +2233,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     _output.backgroundColor=UIColor.secondarySystemBackgroundColor;
     _output.layer.cornerRadius=10;
     [stack addArrangedSubview:_output];
-    _output.text=@"Ready. Eight safe prerequisite checks and coverage status for recent exploit candidates. Copy All Results produces one JSON report. Candidates marked untested are NOT executed.";
+    _output.text=@"Ready. Nine safe checks including public GameKit authentication state. Copy All Results produces one JSON report. Untested exploit candidates are NOT executed.";
 }
 - (void)copyResults:(id)sender {
     if (!_latestJSON.length) return;
@@ -2240,7 +2266,9 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
             break; // Never run a check unless its before record was durable.
         }
         NSTimeInterval started=NSProcessInfo.processInfo.systemUptime;
-        NSDictionary *result=ForceBoundedCheck([test[@"method"] unsignedIntegerValue],name);
+        NSDictionary *result=[test[@"method"] unsignedIntegerValue]==6 ?
+            GameKitAuthenticationBaseline() :
+            ForceBoundedCheck([test[@"method"] unsignedIntegerValue],name);
         NSNumber *latency=@((NSInteger)((NSProcessInfo.processInfo.systemUptime-started)*1000));
         if (![journal record:@"after" session:session method:method attempt:attempt
                     details:@{@"case":name,@"result":result ?: @{},
@@ -2248,7 +2276,12 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
             failure=journal.lastError ?: @"Failed to log after";
             break;
         }
-        [results addObject:@{@"track":test[@"track"], @"test":test[@"name"],
+        NSString *outcome=[result[@"status"] isEqual:@"unavailable"] ? @"NOT_TESTED" :
+            ([name isEqual:@"IOMobileFramebuffer"] &&
+             ![result[@"service_class"] isEqual:@"IOMobileFramebuffer"]) ? @"CLASS_MISMATCH" :
+            ([name isEqual:@"mobile_library"] && [result[@"read_access"] boolValue]) ? @"REVIEW_REQUIRED" :
+            @"OBSERVED";
+        [results addObject:@{@"outcome":outcome, @"track":test[@"track"], @"test":test[@"name"],
                              @"case":name,@"method":test[@"method"],
                              @"latency_ms":latency,@"result":result ?: @{},
                              @"verified_exploit":@NO}];
@@ -2258,7 +2291,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
                      @"expected_checks":@(tests.count),@"error":failure ?: [NSNull null]}];
     NSArray<NSDictionary *> *candidateCoverage=@[
         @{@"candidate":@"Game Center CVE-2026-64740", @"tested":@YES,
-          @"scope":@"entitlement and Mach name lookup only",@"exploit_verified":@NO},
+          @"scope":@"entitlement, name lookup and public GameKit authentication state only",@"exploit_verified":@NO},
         @{@"candidate":@"AOPTouch / IOHIDFamily", @"tested":@YES,
           @"scope":@"registry discovery only",@"exploit_verified":@NO},
         @{@"candidate":@"IOSurface", @"tested":@YES,
