@@ -1583,6 +1583,12 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     _concurrent=[UISwitch new];
     [parallel addArrangedSubview:_concurrent];
     [_content addArrangedSubview:parallel];
+    UIButton *study=[UIButton buttonWithType:UIButtonTypeSystem];
+    [study setTitle:@"Prepare recommended 30-minute research study"
+        forState:UIControlStateNormal];
+    [study addTarget:self action:@selector(prepareResearchStudy:)
+        forControlEvents:UIControlEventTouchUpInside];
+    [_content addArrangedSubview:study];
     [self addText:@"Risk acknowledgment" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
     [self addText:@"Even non-destructive diagnostics can cause unexpected behavior. Future tests may require additional risk warnings. A backup reduces potential data loss but cannot guarantee against a restore-required failure. Device panic and abnormal termination cannot always be distinguished by an app." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     UIStackView *ack=[UIStackView new];
@@ -1655,6 +1661,17 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
         name:UIApplicationDidEnterBackgroundNotification object:nil];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(forceForegrounded:)
         name:UIApplicationWillEnterForegroundNotification object:nil];
+}
+- (void)prepareResearchStudy:(id)sender {
+    if (_activeSession) {
+        _status.text=@"Stop the active session before changing the study preset.";
+        return;
+    }
+    for (UISwitch *choice in _choices) choice.on=YES;
+    _sessionLength.selectedSegmentIndex=0;
+    _samplingInterval.selectedSegmentIndex=1;
+    _concurrent.on=YES;
+    _status.text=@"Research preset prepared: all six read-only methods, 15-second cadence, parallel execution, 30 active minutes. Review the risks and acknowledge before starting.";
 }
 - (void)previewTapped:(id)sender {
     NSMutableArray<NSString *> *selected=[NSMutableArray new];
