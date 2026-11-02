@@ -1455,7 +1455,6 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     UIScrollView *_scroll;
     UIStackView *_content;
     NSMutableArray<UISwitch *> *_choices;
-    UISegmentedControl *_duration;
     UISwitch *_concurrent;
     UISegmentedControl *_samplingInterval;
     UISegmentedControl *_sessionLength;
@@ -1689,10 +1688,14 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
         return;
     }
     NSString *session=NSUUID.UUID.UUIDString;
+    NSArray<NSNumber *> *cadences=@[@5,@15,@30];
     NSDictionary *configuration=@{
         @"methods":selected,
-        @"duration":@[@"15 minutes",@"1 hour",@"6 hours"][(NSUInteger)_duration.selectedSegmentIndex],
+        @"duration":_sessionLength.selectedSegmentIndex==0 ?
+            @"30 active minutes" : @"until_stopped",
+        @"cadence_seconds":cadences[(NSUInteger)_samplingInterval.selectedSegmentIndex],
         @"concurrent":@(_concurrent.on),@"risk_acknowledged":@YES,
+        @"advanced":@(_advancedToggle.on && _advancedApproved),
         @"execution_enabled":@NO
     };
     BOOL ok=[[ForceLog shared] record:@"configuration_preview" session:session
