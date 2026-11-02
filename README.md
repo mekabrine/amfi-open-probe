@@ -1,12 +1,28 @@
-## Force research runner — four-step implementation (2026-11-01)
+## Force — evidence-focused 30-minute research study
 
-The **Research runner → Force** page now provides five independently selectable, bounded research checks: this app's signing entitlement presence, Mach service name lookup (no message sent), IOKit registry service discovery (no user-client methods), app-owned directory existence, and runtime symbol availability. Each shows its relative risk (low), with explicit acknowledgment. Choose 15 minutes, 1 hour, or 6 hours, and serial or concurrent operation. Methods rotate through fixed cases with a 30-second interval; these checks are not exploit brute-forcing, kernel fuzzing, process injection, or privilege escalation.
+**Objective:** turn one bounded 30-minute session into a reviewable record of what the iPad process can actually observe, which results changed, and which security-boundary questions remain unresolved. This is **not** an autonomous exploit generator, kernel fuzzer, code-signing bypass or code-injection app.
 
-The single journal is `Documents/force-research.jsonl` (JSON Lines, one JSON object per line). Records include a session ID, attempt ID, method ID, UTC timestamps with milliseconds, Unix milliseconds, event type, and input/result details. A `before` event is written and synchronized with `fsync` before each check; `after` is written and synchronized upon return. Failure to sync the `before` event halts that worker rather than proceeding unlogged. The Force page includes a journal self-test and an iPad share-sheet export button. Avoid deleting or overwriting the app's Documents folder if preserving history is important.
+### Recommended procedure
 
-On reopening Force, the app inspects the journal for unfinished sessions and unmatched operations. A changed estimated boot epoch may support a **possible device reboot**; it cannot prove kernel panic or tell whether the app crashed, was suspended, or was killed. Going to background records the transition and requests the workers stop. Keep the app in the foreground and prevent auto-lock for overnight use; iPadOS does not guarantee background execution or automatic restart after a reboot. All operations should be considered **unverified on hardware** until an actual signed IPA has run.
+1. Open **Research Tests → Force**, tap **Prepare recommended 30-minute research study**. This selects all six read-only methods, parallel workers, 15-second cadence and a **30-active-minute** timer (paused time excluded). Review the risk descriptions and acknowledge before starting.
+2. Tap **Start**; keep the app in the foreground and do not lock the iPad. **Pause/Resume** and **Stop** remain available, and **Until stopped** is an alternative to the timed preset.
+3. Watch the **Live event console** and counts of first-seen states, state changes and API errors. "OK" means only that the diagnostic ran. Repeated observations are not new exploit evidence.
+4. At the end of the run, read the **Research briefing** in Force, then select **Export research package (memo + report + JSONL)**. Share these **three files** together for review:
+   - `force-research-briefing.txt` — a concise evidence review and follow-up research questions.
+   - `force-research-report.json` — per-case counts, first/last results, latency aggregates, noteworthy state changes, cross-session differences, and known gaps.
+   - `force-research.jsonl` — append-only input/output journal with millisecond timestamps and before/after records.
 
-**Building and checking:** run the existing manual [GitHub Actions IPA workflow](../../actions/workflows/build.yml) on `main`. Download the unsigned IPA only if Xcode succeeds, sign it with Feather, and install it. First verify Force's "Test durable before/after logging" and export the JSONL, then try one selected low-risk check for 15 minutes, then concurrent mode. If compilation fails, use the Actions log before installing. No Xcode compiler or GitHub Actions dispatch tool was available in the development environment, so a passing IPA build is **not yet confirmed**.
+### What is sampled
+
+The six read-only methods include (1) this app's signing entitlements and Boolean values, (2) Mach bootstrap service-name resolution without sending service requests, (3) IOKit registry class/parent/path discovery without connecting to user clients, (4) filesystem `stat`/`access` probes without opening or writing files, (5) runtime symbol and image-name resolution without invoking the symbols, and (6) app-local power, thermal, CPU and memory telemetry. Optional **Advanced Research** adds bounded signing-permission checks after a first-use safety review.
+
+**Important interpretation:** a registered service, a successful bootstrap lookup, a present entitlement or a POSIX-access flag is **not** evidence of a sandbox escape, privileged service authorization, kernel read/write or process injection. The report's research questions are leads for review, not findings of an exploit. If nothing changes, another identical 30-minute run is unlikely to add value.
+
+### Reliability and limitations
+
+The same JSONL journal receives every method's input, result, session and lifecycle records. Each `before` and `after` entry is synchronized with `fsync`; a power loss can still leave a partial last line. The recovery view reports incomplete sessions and possible reboot without claiming a proven panic. The app cannot guarantee background operation or automatic restart after reboot, and does not prevent the user from force-quitting it. Serial mode now schedules all selected workers and uses a shared gate so the first never-ending worker cannot starve the others.
+
+**Build:** run the existing [manual GitHub Actions workflow](../../actions/workflows/build.yml) on `main`. If it succeeds, download the unsigned IPA and sign using Feather. Source was reviewed after these changes, but an on-device run and a passing Xcode compile of this revision are **not yet confirmed**.
 
 ---
 
