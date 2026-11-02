@@ -958,14 +958,54 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         typedef CFTypeRef (*TaskValue)(CFTypeRef,CFStringRef,CFErrorRef *);
         TaskCreate create=(TaskCreate)dlsym(security,"SecTaskCreateFromSelf");
         TaskValue value=(TaskValue)dlsym(security,"SecTaskCopyValueForEntitlement");
-        CFTypeRef task=create?create(kCFAllocatorDefault):NULL;
-        CFTypeRef result=(task&&value)?value(task,(__bridge CFStringRef)item,NULL):NULL;
+        if (!create || !value) {
+            dlclose(security);
+            return @{@"status":@"unavailable",
+                     @"reason":@"Security entitlement inspection symbols missing"};
+        }
+        CFTypeRef task=create(kCFAllocatorDefault);
+        if (!task) {
+            dlclose(security);
+            return @{@"status":@"unavailable",
+                     @"reason":@"Could not inspect this process signature"};
+        }
+        CFErrorRef queryError=NULL;
+        CFTypeRef result=value(task,(__bridge CFStringRef)item,&queryError);
         BOOL present=result!=NULL;
+        NSString *valueType=@"absent";
+        id booleanEnabled=[NSNull null];
+        if (result) {
+            CFTypeID type=CFGetTypeID(result);
+            if (type==CFBooleanGetTypeID()) {
+                valueType=@"boolean";
+                booleanEnabled=@(CFBooleanGetValue((CFBooleanRef)result));
+            } else if (type==CFStringGetTypeID()) {
+                valueType=@"string";
+            } else if (type==CFArrayGetTypeID()) {
+                valueType=@"array";
+            } else if (type==CFDictionaryGetTypeID()) {
+                valueType=@"dictionary";
+            } else if (type==CFNumberGetTypeID()) {
+                valueType=@"number";
+            } else {
+                valueType=@"other";
+            }
+        }
+        NSMutableDictionary *report=[@{
+            @"status":@"ok",
+            @"entitlement_present":@(present),
+            @"value_type":valueType,
+            @"boolean_enabled":booleanEnabled,
+            @"note":@"Effective entitlement value on this process; does not establish remote service authorization or an exploit"
+        } mutableCopy];
+        if (queryError) {
+            report[@"query_error_code"]=@(CFErrorGetCode(queryError));
+            CFRelease(queryError);
+        }
         if (result) CFRelease(result);
-        if (task) CFRelease(task);
+        CFRelease(task);
         dlclose(security);
-        return @{@"status":@"ok",@"entitlement_present":@(present),
-                 @"note":@"Presence only; not proof of service authorization"};
+        return report;
     }
     if (method==1) {
         typedef kern_return_t (*Lookup)(mach_port_t,const char *,mach_port_t *);
