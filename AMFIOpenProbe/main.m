@@ -620,16 +620,16 @@ typedef int (*ProbePidFdInfo)(int, int, int, void *, int);
 @implementation AIODisclosureController
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title = @"AIO Kernel Address";
+    self.title = @"AIO Kernel Heap Pointer";
     self.view.backgroundColor = UIColor.systemBackgroundColor;
     UILabel *message = [UILabel new];
     message.translatesAutoresizingMaskIntoConstraints = NO;
     message.numberOfLines = 0;
     message.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
-    message.text = @"CVE-2026-84530: a one-shot read-only test for an AIO "
-      "kernel-object address unintentionally exposed through kqueue metadata. "
-      "No kernel memory writes, crashes, or SpringBoard edits. "
-      "A successful leak is NOT arbitrary kernel memory read/write.";
+    message.text = @"CVE-2026-84530: reads this process's AIO kqueue "
+      "metadata to check for a leaked aio_workq_entry heap pointer. "
+      "The pointer is NOT the kernel image base or a code-execution primitive. "
+      "A result must have ordinary event data equal to zero.";
     self.runButton = [UIButton buttonWithType:UIButtonTypeSystem];
     self.runButton.translatesAutoresizingMaskIntoConstraints = NO;
     [self.runButton setTitle:@"Run AIO metadata test once"
@@ -734,8 +734,9 @@ typedef int (*ProbePidFdInfo)(int, int, int, void *, int);
         for (NSUInteger i=0; i<count; i++) {
             uint64_t value = records[i].savedData;
             if (records[i].event.filter == EVFILT_AIO &&
+                records[i].event.data == 0 &&
                 value >= 0xffff000000000000ULL) {
-                [log appendFormat:@"PASS: AIO saved-data kernel address 0x%016llx; event data=%lld\n",
+                [log appendFormat:@"PASS: leaked aio_workq_entry heap pointer 0x%016llx; event data=%lld\nNot a kernel base, kernel R/W or code execution.\n",
                     (unsigned long long)value,(long long)records[i].event.data];
                 found=YES;
                 break;
@@ -802,7 +803,7 @@ cleanup:
 - (NSString *)noteAt:(NSIndexPath *)indexPath {
     if (indexPath.section == 0) return @"Existing cross-app data-file write validation";
     if (indexPath.section == 2) return @"One-time service access checks";
-    if (indexPath.section == 3) return @"Actual kernel-address disclosure, read-only";
+    if (indexPath.section == 3) return @"AIO work-entry heap pointer disclosure, read-only";
     return @[@"Registered services; manager connection",
              @"Registry only — no connection opens",
              @"Standard HID manager client opens",
@@ -838,7 +839,7 @@ cleanup:
     if (section == 1)
         return @"These are historical research checks, not kernel memory access. No tests run automatically.";
     if (section == 2) return @"Do not repeat completed access checks without a new question to test.";
-    return @"CVE-2026-84530 is a kernel-address leak, not arbitrary memory access or code execution. No stress loops.";
+    return @"CVE-2026-84530 leaks the address of an aio_workq_entry heap allocation, not a kernel image address. This does not enable process injection. No stress loops.";
 }
 @end
 
