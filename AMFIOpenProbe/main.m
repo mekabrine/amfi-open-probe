@@ -1298,7 +1298,7 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
     NSMutableArray<NSDictionary *> *prioritizedQuestions=[NSMutableArray new];
     NSMutableArray<NSDictionary *> *signals=[NSMutableArray new];
     NSDictionary *gameCenter=caseStats[@"0:com.apple.developer.game-center"];
-    NSDictionary *gamedStats=caseStats[@"1:com.apple.gamedStats"];
+    NSDictionary *gamedStats=caseStats[@"1:com.apple.gamed"];
     NSDictionary *aop=caseStats[@"2:AOPTouchHIDDriver"];
     NSDictionary *surface=caseStats[@"2:IOSurfaceRoot"];
     NSDictionary *gcResult=gameCenter[@"last_result"];
@@ -1320,7 +1320,7 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
         }];
     }
     if (gamedStats) {
-        [signals addObject:@{@"topic":@"gamedStats_name_resolution",
+        [signals addObject:@{@"topic":@"gamed_name_resolution",
             @"classification":[gamedStatsResult[@"lookup_success"] boolValue] ?
                  @"name_resolved" : @"name_not_resolved",
             @"evidence":gamedStatsResult ?: @{}}];
