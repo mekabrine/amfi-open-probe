@@ -856,9 +856,77 @@ cleanup:
 - (void)dealloc { if (_descriptor>=0) close(_descriptor); }
 @end
 
+
+#pragma mark - Force bounded diagnostic workers (Step 3 of 4)
+#include <dlfcn.h>
+#include <sys/stat.h>
+static NSArray<NSString *> *ForceItems(NSUInteger method) {
+    switch(method) {
+        case 0: return @[@"com.apple.developer.game-center",@"get-task-allow",
+                         @"com.apple.developer.team-identifier"];
+        case 1: return @[@"com.apple.gamed",@"com.apple.cfprefsd.xpc.daemon",
+                         @"com.apple.backboardd",@"com.apple.lsd"];
+        case 2: return @[@"IOSurfaceRoot",@"AOPTouchHIDDriver",
+                         @"IOMobileFramebuffer",@"AppleAVE2Driver"];
+        case 3: return @[@"documents",@"bundle",@"temporary"];
+        case 4: return @[@"proc_pidfdinfo",@"sandbox_check",
+                         @"task_for_pid",@"bootstrap_look_up"];
+    }
+    return @[];
+}
+static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
+    if (method==0) {
+        void *security=dlopen("/System/Library/Frameworks/Security.framework/Security",RTLD_LAZY);
+        if (!security) return @{@"status":@"unavailable"};
+        typedef CFTypeRef (*TaskCreate)(CFAllocatorRef);
+        typedef CFTypeRef (*TaskValue)(CFTypeRef,CFStringRef,CFErrorRef *);
+        TaskCreate create=(TaskCreate)dlsym(security,"SecTaskCreateFromSelf");
+        TaskValue value=(TaskValue)dlsym(security,"SecTaskCopyValueForEntitlement");
+        CFTypeRef task=create?create(kCFAllocatorDefault):NULL;
+        CFTypeRef result=(task&&value)?value(task,(__bridge CFStringRef)item,NULL):NULL;
+        BOOL present=result!=NULL;
+        if (result) CFRelease(result);
+        if (task) CFRelease(task);
+        dlclose(security);
+        return @{@"status":@"ok",@"entitlement_present":@(present)};
+    }
+    if (method==1) {
+        typedef kern_return_t (*Lookup)(mach_port_t,const char *,mach_port_t *);
+        Lookup lookup=(Lookup)dlsym(RTLD_DEFAULT,"bootstrap_look_up");
+        if (!lookup) return @{@"status":@"unavailable"};
+        mach_port_t service=MACH_PORT_NULL;
+        kern_return_t kr=lookup(bootstrap_port,item.UTF8String,&service);
+        if (service!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(),service);
+        return @{@"status":@"ok",@"return_code":@(kr),
+                 @"note":@"Name lookup only; no request sent"};
+    }
+    if (method==2) {
+        CFMutableDictionaryRef match=IOServiceMatching(item.UTF8String);
+        if (!match) return @{@"status":@"unavailable"};
+        io_service_t object=IOServiceGetMatchingService(kIOMainPortDefault,match);
+        BOOL exists=object!=IO_OBJECT_NULL;
+        if (object!=IO_OBJECT_NULL) IOObjectRelease(object);
+        return @{@"status":@"ok",@"service_registered":@(exists),
+                 @"note":@"Registry lookup only; no connection opened"};
+    }
+    if (method==3) {
+        NSString *location=[item isEqualToString:@"documents"] ?
+          [NSSearchPathForDirectoriesInDomains(NSDocumentDirectory,NSUserDomainMask,YES) firstObject] :
+          ([item isEqualToString:@"bundle"] ? NSBundle.mainBundle.bundlePath : NSTemporaryDirectory());
+        BOOL exists=[[NSFileManager defaultManager] fileExistsAtPath:location];
+        return @{@"status":@"ok",@"directory_exists":@(exists),
+                 @"note":@"App-owned paths only; no reads or writes"};
+    }
+    if (method==4) {
+        return @{@"status":@"ok",@"symbol_exported":@(dlsym(RTLD_DEFAULT,item.UTF8String)!=NULL),
+                 @"note":@"Symbol presence only; function not called"};
+    }
+    return @{@"status":@"unsupported"};
+}
+
 #pragma mark - Force planning UI (Step 1 of 4)
 
-/* Interface only. No diagnostic workers or privileged calls in this stage. */
+/* Bounded read-only workers only; no malformed inputs or exploit payloads. */
 @interface ForcePageController : UIViewController
 @end
 @implementation ForcePageController {
@@ -870,6 +938,10 @@ cleanup:
     UISwitch *_accepted;
     UILabel *_status;
     NSString *_previewSession;
+    NSOperationQueue *_forceQueue;
+    NSString *_activeSession;
+    BOOL _stopping;
+    NSInteger _outstanding;
 }
 - (UILabel *)addText:(NSString *)text font:(UIFont *)font {
     UILabel *label=[UILabel new];
@@ -903,7 +975,7 @@ cleanup:
         [_content.trailingAnchor constraintEqualToAnchor:_scroll.frameLayoutGuide.trailingAnchor constant:-18]
     ]];
     [self addText:@"Select research methods" font:[UIFont boldSystemFontOfSize:21]];
-    [self addText:@"Step 2: journal and export enabled. Execution workers are not installed; preview records only your selected configuration." font:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
+    [self addText:@"Step 3: selected bounded checks can run concurrently or serially. Each API call is logged before and after it executes. Keep the app foregrounded." font:[UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline]];
     NSArray<NSDictionary *> *methods=@[
       @{@"name":@"Signing entitlement audit",@"risk":@"Low: ordinary API errors; exposes only this app's signing permissions."},
       @{@"name":@"Mach service lookup",@"risk":@"Low: lookup failures and minor resource/battery use; no messages sent."},
@@ -973,7 +1045,16 @@ cleanup:
     [share setTitle:@"Export Force JSONL journal" forState:UIControlStateNormal];
     [share addTarget:self action:@selector(exportJournal:) forControlEvents:UIControlEventTouchUpInside];
     [_content addArrangedSubview:share];
-    _status=[self addText:[NSString stringWithFormat:@"No execution workers installed.\nJournal: %@",[ForceLog shared].path] font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    UIButton *start=[UIButton buttonWithType:UIButtonTypeSystem];
+    [start setTitle:@"Start selected bounded checks" forState:UIControlStateNormal];
+    [start addTarget:self action:@selector(startForce:) forControlEvents:UIControlEventTouchUpInside];
+    [_content addArrangedSubview:start];
+    UIButton *stop=[UIButton buttonWithType:UIButtonTypeSystem];
+    [stop setTitle:@"Stop selected runs" forState:UIControlStateNormal];
+    [stop addTarget:self action:@selector(stopForce:) forControlEvents:UIControlEventTouchUpInside];
+    [_content addArrangedSubview:stop];
+    _status=[self addText:[NSString stringWithFormat:@"Ready. Journal: %@",[ForceLog shared].path]
+        font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
 }
 - (void)previewTapped:(id)sender {
     NSMutableArray<NSString *> *selected=[NSMutableArray new];
@@ -1017,6 +1098,86 @@ cleanup:
     _status.text=after ?
         [NSString stringWithFormat:@"Durable before/after records saved.\nAttempt: %@",attempt] :
         [NSString stringWithFormat:@"AFTER record failed: %@",journal.lastError ?: @"unknown"];
+}
+
+- (void)startForce:(id)sender {
+    if (_activeSession) { _status.text=@"A session is already running."; return; }
+    if (!_accepted.on) { _status.text=@"Review and acknowledge the risks first."; return; }
+    NSMutableArray<NSNumber *> *chosen=[NSMutableArray new];
+    for (NSUInteger index=0;index<_choices.count;index++)
+        if (_choices[index].on) [chosen addObject:@(index)];
+    if (!chosen.count) { _status.text=@"Select at least one method."; return; }
+    ForceLog *log=[ForceLog shared];
+    if (log.lastError) { _status.text=log.lastError; return; }
+    NSString *session=NSUUID.UUID.UUIDString;
+    NSInteger duration=@[@900,@3600,@21600][(NSUInteger)_duration.selectedSegmentIndex].integerValue;
+    if (![log record:@"session_start" session:session method:@"runner" attempt:@""
+             details:@{@"method_indices":chosen,@"duration_seconds":@(duration),
+                       @"concurrent":@(_concurrent.on)}]) {
+        _status.text=log.lastError ?: @"Could not save session record";
+        return;
+    }
+    _activeSession=session;
+    _stopping=NO;
+    _outstanding=chosen.count;
+    _forceQueue=[NSOperationQueue new];
+    _forceQueue.maxConcurrentOperationCount=_concurrent.on ? (NSInteger)chosen.count : 1;
+    __weak ForcePageController *weakSelf=self;
+    for (NSNumber *number in chosen) {
+        NSUInteger method=number.unsignedIntegerValue;
+        [_forceQueue addOperationWithBlock:^{
+            NSArray<NSString *> *items=ForceItems(method);
+            NSTimeInterval end=NSProcessInfo.processInfo.systemUptime+duration;
+            NSInteger iteration=0;
+            while (NSProcessInfo.processInfo.systemUptime<end) {
+                ForcePageController *strongSelf=weakSelf;
+                if (!strongSelf) break;
+                @synchronized(strongSelf) {if (strongSelf->_stopping) break;}
+                NSString *item=items[(NSUInteger)iteration%items.count];
+                NSString *attempt=NSUUID.UUID.UUIDString;
+                BOOL saved=[log record:@"before" session:session
+                    method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
+                    attempt:attempt details:@{@"case":item,@"iteration":@(iteration)}];
+                if (!saved) break; // Never issue a request without a durable before record.
+                NSDictionary *result=ForceBoundedCheck(method,item);
+                if (![log record:@"after" session:session
+                    method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
+                    attempt:attempt details:@{@"result":result ?: @{},@"iteration":@(iteration)}]) break;
+                iteration++;
+                // Between checks, minimize load and allow stop within one second.
+                for (int delay=0;delay<30;++delay) {
+                    @synchronized(strongSelf) {if (strongSelf->_stopping) break;}
+                    if (NSProcessInfo.processInfo.systemUptime>=end) break;
+                    [NSThread sleepForTimeInterval:1.0];
+                }
+            }
+            [log record:@"worker_end" session:session
+                 method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
+                 attempt:@"" details:@{@"iterations":@(iteration)}];
+            [[NSOperationQueue mainQueue] addOperationWithBlock:^{
+                ForcePageController *strongSelf=weakSelf;
+                if (!strongSelf || ![strongSelf->_activeSession isEqualToString:session]) return;
+                strongSelf->_outstanding--;
+                strongSelf->_status.text=[NSString stringWithFormat:
+                    @"Session %@: %ld worker(s) remain. Last completed method %lu. Journal: %@",
+                    session,(long)strongSelf->_outstanding,(unsigned long)method,log.path];
+                if (strongSelf->_outstanding==0) {
+                    [log record:@"session_end" session:session method:@"runner"
+                        attempt:@"" details:@{@"stopped":@(strongSelf->_stopping)}];
+                    strongSelf->_activeSession=nil;
+                    strongSelf->_forceQueue=nil;
+                }
+            }];
+        }];
+    }
+    _status.text=[NSString stringWithFormat:@"Started %@ with %lu method(s).",session,(unsigned long)chosen.count];
+}
+- (void)stopForce:(id)sender {
+    @synchronized(self) {_stopping=YES;}
+    if (_activeSession)
+        [[ForceLog shared] record:@"stop_requested" session:_activeSession
+            method:@"runner" attempt:@"" details:@{}];
+    _status.text=@"Stop requested; workers finish the current bounded operation.";
 }
 - (void)exportJournal:(id)sender {
     NSString *path=[ForceLog shared].path;
