@@ -775,10 +775,12 @@ cleanup:
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
+#include <sys/time.h>
 
 @interface ForceLog : NSObject
 @property(nonatomic,readonly) NSString *path;
 @property(nonatomic,readonly) NSString *lastError;
+@property(nonatomic,readonly) NSString *recoveryReport;
 + (instancetype)shared;
 - (BOOL)record:(NSString *)kind session:(NSString *)session method:(NSString *)method
       attempt:(NSString *)attempt details:(NSDictionary *)details;
@@ -789,6 +791,7 @@ cleanup:
     uint64_t _sequence;
     NSISO8601DateFormatter *_clock;
     NSString *_lastError;
+    NSString *_recoveryReport;
 }
 + (instancetype)shared {
     static ForceLog *singleton=nil;
@@ -808,8 +811,80 @@ cleanup:
     _descriptor=open(_path.fileSystemRepresentation,O_CREAT|O_APPEND|O_WRONLY,0600);
     if (_descriptor<0)
         _lastError=[NSString stringWithFormat:@"Open failed, errno %d",errno];
+    _recoveryReport=[self inspectExistingJournal];
+    [self record:@"app_open" session:@"lifecycle" method:@"recovery" attempt:@""
+        details:@{@"recovery_report":_recoveryReport ?: @"unknown"}];
     return self;
 }
+
+- (NSString *)recoveryReport {return _recoveryReport ?: @"No previous session data.";}
+- (long long)currentBootMs {
+    NSTimeInterval boot=[NSDate date].timeIntervalSince1970 -
+                          NSProcessInfo.processInfo.systemUptime;
+    return (long long)(boot*1000.0);
+}
+/* The journal is event-oriented: an unmatched BEFORE means its AFTER was
+ * never written, not that the last API call necessarily caused termination.
+ * A changed boot epoch suggests reboot, but cannot prove kernel panic. */
+- (NSString *)inspectExistingJournal {
+    NSData *data=[NSData dataWithContentsOfFile:_path options:0 error:nil];
+    if (!data.length) return @"No previous Force journal entries.";
+    NSString *contents=[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+    if (!contents) return @"Journal cannot be decoded as UTF-8; export for inspection.";
+    NSMutableDictionary *openSessions=[NSMutableDictionary new];
+    NSMutableDictionary *openAttempts=[NSMutableDictionary new];
+    long long previousBoot=0;
+    NSUInteger rows=0;
+    for (NSString *line in [contents componentsSeparatedByString:@"\n"]) {
+        if (line.length==0) continue;
+        NSDictionary *entry=[NSJSONSerialization JSONObjectWithData:
+            [line dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        if (![entry isKindOfClass:NSDictionary.class]) continue;
+        rows++;
+        _sequence=MAX(_sequence,[entry[@"sequence"] unsignedLongLongValue]);
+        NSString *kind=entry[@"event"], *session=entry[@"session"], *attempt=entry[@"attempt"];
+        if (![kind isKindOfClass:NSString.class] ||
+            ![session isKindOfClass:NSString.class]) continue;
+        if ([kind isEqualToString:@"session_start"]) {
+            openSessions[session]=entry;
+            NSNumber *boot=entry[@"boot_epoch_ms"];
+            if ([boot isKindOfClass:NSNumber.class]) previousBoot=boot.longLongValue;
+        } else if ([kind isEqualToString:@"session_end"]) {
+            [openSessions removeObjectForKey:session];
+        } else if ([kind isEqualToString:@"before"] &&
+                   [attempt isKindOfClass:NSString.class] && attempt.length) {
+            openAttempts[attempt]=entry;
+        } else if ([kind isEqualToString:@"after"] &&
+                   [attempt isKindOfClass:NSString.class]) {
+            [openAttempts removeObjectForKey:attempt];
+        }
+    }
+    if (openSessions.count==0)
+        return [NSString stringWithFormat:@"Previous sessions completed or none started. %lu journal entries.",
+            (unsigned long)rows];
+    NSDictionary *latest=nil;
+    for (NSDictionary *candidate in openSessions.allValues)
+        if (!latest || [candidate[@"unix_ms"] longLongValue]>[latest[@"unix_ms"] longLongValue])
+            latest=candidate;
+    NSString *session=latest[@"session"];
+    NSDictionary *pending=nil;
+    for (NSDictionary *candidate in openAttempts.allValues) {
+        if (![candidate[@"session"] isEqualToString:session]) continue;
+        if (!pending || [candidate[@"unix_ms"] longLongValue]>[pending[@"unix_ms"] longLongValue])
+            pending=candidate;
+    }
+    BOOL rebootObserved=previousBoot>0 && llabs(previousBoot-[self currentBootMs])>120000;
+    NSString *classification=rebootObserved ?
+        @"Possible device reboot since session start; panic is NOT established." :
+        @"Session ended without session_end. App quit, crash, suspension or termination possible; cause UNKNOWN.";
+    NSString *last=pending ?
+        [NSString stringWithFormat:@"Unfinished attempt %@, method %@, input %@.",
+          pending[@"attempt"] ?: @"?",pending[@"method"] ?: @"?",pending[@"details"] ?: @{}] :
+        @"No unmatched before record; interruption occurred outside an in-flight operation.";
+    return [NSString stringWithFormat:@"%@\nSession %@\n%@\nExport JSONL for analysis.",
+        classification,session ?: @"unknown",last];
+}
+
 - (NSString *)lastError { @synchronized(self) {return _lastError;} }
 - (BOOL)record:(NSString *)kind session:(NSString *)session method:(NSString *)method
       attempt:(NSString *)attempt details:(NSDictionary *)details {
@@ -820,6 +895,7 @@ cleanup:
             @"schema":@1, @"sequence":@(++_sequence),
             @"time": [_clock stringFromDate:date],
             @"unix_ms":@((long long)(date.timeIntervalSince1970*1000.0)),
+            @"boot_epoch_ms":@([self currentBootMs]),
             @"event":kind ?: @"unknown", @"session":session ?: @"",
             @"method":method ?: @"", @"attempt":attempt ?: @"",
             @"details":details ?: @{}
@@ -942,6 +1018,7 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     UISwitch *_accepted;
     UILabel *_status;
     NSString *_previewSession;
+    UILabel *_recoveryLabel;
     NSOperationQueue *_forceQueue;
     NSString *_activeSession;
     BOOL _stopping;
@@ -1057,8 +1134,15 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     [stop setTitle:@"Stop selected runs" forState:UIControlStateNormal];
     [stop addTarget:self action:@selector(stopForce:) forControlEvents:UIControlEventTouchUpInside];
     [_content addArrangedSubview:stop];
+    _recoveryLabel=[self addText:[NSString stringWithFormat:
+        @"Last session / recovery:\n%@",[ForceLog shared].recoveryReport]
+        font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     _status=[self addText:[NSString stringWithFormat:@"Ready. Journal: %@",[ForceLog shared].path]
         font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(forceBackgrounded:)
+        name:UIApplicationDidEnterBackgroundNotification object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(forceForegrounded:)
+        name:UIApplicationWillEnterForegroundNotification object:nil];
 }
 - (void)previewTapped:(id)sender {
     NSMutableArray<NSString *> *selected=[NSMutableArray new];
@@ -1175,6 +1259,20 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         }];
     }
     _status.text=[NSString stringWithFormat:@"Started %@ with %lu method(s).",session,(unsigned long)chosen.count];
+}
+- (void)forceBackgrounded:(NSNotification *)notification {
+    if (_activeSession) {
+        [[ForceLog shared] record:@"app_background" session:_activeSession
+            method:@"lifecycle" attempt:@"" details:@{@"note":@"Foreground-only runner stopping"}];
+        [self stopForce:nil];
+    }
+}
+- (void)forceForegrounded:(NSNotification *)notification {
+    [[ForceLog shared] record:@"app_foreground" session:@"lifecycle"
+        method:@"lifecycle" attempt:@"" details:@{}];
+}
+- (void)dealloc {
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 - (void)stopForce:(id)sender {
     @synchronized(self) {_stopping=YES;}
