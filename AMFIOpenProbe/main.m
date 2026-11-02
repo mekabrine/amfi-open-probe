@@ -1217,10 +1217,16 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
         NSMutableDictionary *stats=caseStats[key];
         if (!stats) {
             stats=[@{@"method":method,@"case":caseName,@"count":@0,
-                @"changes":@0,@"unavailable":@0} mutableCopy];
+                @"changes":@0,@"unavailable":@0,
+                @"latency_sum_ms":@0,@"max_latency_ms":@0} mutableCopy];
             caseStats[key]=stats;
         }
         stats[@"count"]=@([stats[@"count"] integerValue]+1);
+        if ([details[@"latency_ms"] isKindOfClass:NSNumber.class]) {
+            NSInteger millis=MAX(0,[details[@"latency_ms"] integerValue]);
+            stats[@"latency_sum_ms"]=@([stats[@"latency_sum_ms"] integerValue]+millis);
+            stats[@"max_latency_ms"]=@(MAX([stats[@"max_latency_ms"] integerValue],millis));
+        }
         NSDictionary *result=details[@"result"];
         if (![result isKindOfClass:NSDictionary.class]) result=@{};
         if (!stats[@"first_result"]) stats[@"first_result"]=result;
@@ -1235,8 +1241,10 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
             unavailable++;
             stats[@"unavailable"]=@([stats[@"unavailable"] integerValue]+1);
         }
+        // Repeating the same expected unavailable response is not a new finding.
         if (([finding isEqualToString:@"changed"] ||
-             ![result[@"status"] isEqualToString:@"ok"]) && interesting.count<50)
+             (![result[@"status"] isEqualToString:@"ok"] &&
+               [finding isEqualToString:@"first_seen"])) && interesting.count<50)
             [interesting addObject:@{@"time":entry[@"time"] ?: @"",
                 @"method":method,@"case":caseName,@"finding":finding ?: @"",
                 @"previous":details[@"previous_state"] ?: @{},@"result":result}];
@@ -1312,19 +1320,83 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
             @"evidence_required":@"Completed checks with nonempty per-case results",
             @"limitation":@"No security boundary conclusion is available"}];
     }
-    NSArray *cases=[caseStats.allValues sortedArrayUsingComparator:
-        ^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-            NSString *left=[NSString stringWithFormat:@"%@:%@",a[@"method"],a[@"case"]];
-            NSString *right=[NSString stringWithFormat:@"%@:%@",b[@"method"],b[@"case"]];
-            return [left compare:right];
+    NSMutableArray *cases=[NSMutableArray new];
+    for (NSString *key in [[caseStats allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+        NSMutableDictionary *stats=caseStats[key];
+        NSInteger count=[stats[@"count"] integerValue];
+        stats[@"average_latency_ms"]=@(count>0 ? [stats[@"latency_sum_ms"] doubleValue]/count : 0);
+        [cases addObject:stats];
+    }
+
+    // Evidence-aware research questions. A positive lookup is NOT an exploit.
+    NSMutableArray *questions=[NSMutableArray new];
+    NSDictionary *game=caseStats[@"0:com.apple.developer.game-center"][@"last_result"];
+    NSDictionary *gamed=caseStats[@"1:com.apple.gamed"][@"last_result"];
+    if (game || gamed) {
+        BOOL entitled=[game[@"boolean_enabled"] respondsToSelector:@selector(boolValue)] &&
+                       [game[@"boolean_enabled"] boolValue];
+        BOOL resolvable=[gamed[@"lookup_success"] boolValue];
+        [questions addObject:@{
+            @"topic":@"Game Center signing versus service name resolution",
+            @"evidence":@{@"entitlement_boolean_enabled":game[@"boolean_enabled"] ?: [NSNull null],
+                          @"entitlement_value_type":game[@"value_type"] ?: @"not_observed",
+                          @"gamed_name_resolvable":@(resolvable),
+                          @"gamed_return_code":gamed[@"return_code"] ?: [NSNull null]},
+            @"assessment":entitled && resolvable ?
+                @"Both signing entitlement and name resolution were observed. Neither demonstrates a privileged service call." :
+                @"At least one prerequisite was absent or unverified; service authorization remains unknown.",
+            @"next_research_question":@"Do publicly documented GameKit operations behave differently under the same signing configuration?",
+            @"proof_level":@"metadata_only"
         }];
+    }
+    for (NSString *target in @[@"IOSurfaceRoot",@"AOPTouchHIDDriver",
+                                @"IOMobileFramebuffer",@"AppleAVE2Driver"]) {
+        NSDictionary *io=caseStats[[NSString stringWithFormat:@"2:%@",target]][@"last_result"];
+        if (!io) continue;
+        [questions addObject:@{
+            @"topic":[NSString stringWithFormat:@"IOKit registry: %@",target],
+            @"evidence":@{@"registered":io[@"service_registered"] ?: @NO,
+                          @"registry_class":io[@"service_class"] ?: @"unknown",
+                          @"parent_class":io[@"parent_class"] ?: @"unknown"},
+            @"assessment":@"Registry discovery only; access to a user client or kernel memory was not tested.",
+            @"next_research_question":@"Does an existing read-only inventory or public interface document this service's permitted capabilities?",
+            @"proof_level":@"registry_metadata_only"
+        }];
+    }
+    if (changed || betweenSessions.count) {
+        [questions addObject:@{
+            @"topic":@"Unexpected changes in observed state",
+            @"evidence":@{@"within_session_changes":@(changed),
+                          @"cross_session_differences":@(betweenSessions.count)},
+            @"assessment":@"State changes require review against signing, OS version, thermal state and expected transient behavior.",
+            @"next_research_question":@"Which exact field changed, and can it be reproduced with the same environment?",
+            @"proof_level":@"unverified_change"
+        }];
+    }
+    if (changed==0 && betweenSessions.count==0) {
+        [questions addObject:@{
+            @"topic":@"Low novelty in repeated samples",
+            @"evidence":@{@"completed_checks":@(completed),
+                          @"distinct_case_count":@(caseStats.count)},
+            @"assessment":@"No stable-state changes were detected; more repetitions of the same cases are unlikely to add evidence.",
+            @"next_research_question":@"Compare a different explicitly authorized signing configuration or collect a new type of read-only observation.",
+            @"proof_level":@"repeatable_baseline"
+        }];
+    }
     return @{
         @"schema":@1,@"status":ended ? @"ended" : @"unfinished_or_active",
         @"session":latest,@"previous_session":previous ?: [NSNull null],
         @"environment":environment,
         @"elapsed_seconds":@(began>0 ? MAX(0LL,(last-began)/1000LL) : 0LL),
-        @"completed_checks":@(completed),@"first_seen_states":@(firstSeen),
+        @"completed_checks":@(completed),@"distinct_case_count":@(caseStats.count),
+        @"first_seen_states":@(firstSeen),
         @"within_session_changes":@(changed),@"unavailable_api_calls":@(unavailable),
+        @"research_questions":questions,
+        @"missing_prerequisites":@[
+            @"No proof of executing instructions in another process.",
+            @"No proof of kernel read/write or code-signing enforcement bypass.",
+            @"Successful registry discovery and bootstrap lookup are not service authorization."
+        ],
         @"unmatched_before_records":@(inputs.count),
         @"per_case":cases,@"notable_observations":interesting,
         @"cross_session_differences":betweenSessions,
@@ -1337,6 +1409,42 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
         @"interpretation":@"These are read-only checks. Successful name lookup, registered service, access(2) or symbol visibility does not demonstrate privileged authorization, kernel compromise or jailbreak."
     };
 }
+
+
+/* A small plain-language companion makes a half-hour run reviewable without
+ * loading hundreds of identical repeat events into a chat. */
+static NSString *ForceResearchMemo(NSDictionary *report) {
+    NSMutableString *memo=[NSMutableString stringWithString:
+        @"FORCE RESEARCH REVIEW\nRead-only baseline diagnostics; no exploit demonstrated.\n\n"];
+    [memo appendFormat:@"Session: %@\nStatus: %@\nElapsed: %@ seconds\n",
+         report[@"session"] ?: @"unknown", report[@"status"] ?: @"unknown",
+         report[@"elapsed_seconds"] ?: @0];
+    [memo appendFormat:@"Checks: %@; distinct cases: %@; changes: %@; unavailable: %@\n",
+         report[@"completed_checks"] ?: @0,report[@"distinct_case_count"] ?: @0,
+         report[@"within_session_changes"] ?: @0,report[@"unavailable_api_calls"] ?: @0];
+    [memo appendFormat:@"Unmatched BEFORE records: %@; cross-session differences: %lu\n\n",
+         report[@"unmatched_before_records"] ?: @0,
+         (unsigned long)[report[@"cross_session_differences"] count]];
+    NSDictionary *environment=report[@"environment"];
+    [memo appendFormat:@"Environment: %@\n\n",
+         [environment isKindOfClass:NSDictionary.class] ? environment : @{}];
+    NSArray *questions=report[@"research_questions"];
+    if ([questions isKindOfClass:NSArray.class]) {
+        [memo appendString:@"EVIDENCE AND FOLLOW-UP QUESTIONS\n"];
+        for (NSDictionary *item in questions) {
+            [memo appendFormat:@"\n- %@\n  Evidence: %@\n  Meaning: %@\n  Next question: %@\n",
+                 item[@"topic"] ?: @"Unknown",item[@"evidence"] ?: @{},
+                 item[@"assessment"] ?: @"Unclassified",
+                 item[@"next_research_question"] ?: @"Unspecified"];
+        }
+    }
+    [memo appendString:
+       @"\nLIMITATIONS\nNo cross-process execution, kernel read/write, or code-signing bypass "
+       @"is demonstrated by these checks. An API call returning ok only confirms "
+       @"the diagnostic completed, not that the operation gained privileges.\n"];
+    return memo;
+}
+
 
 #pragma mark - Force planning UI (Step 1 of 4)
 
