@@ -1198,7 +1198,8 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     ForceLog *log=[ForceLog shared];
     if (log.lastError) { _status.text=log.lastError; return; }
     NSString *session=NSUUID.UUID.UUIDString;
-    NSInteger duration=@[@900,@3600,@21600][(NSUInteger)_duration.selectedSegmentIndex].integerValue;
+    NSArray<NSNumber *> *durations=@[@900,@3600,@21600];
+    NSInteger duration=[durations[(NSUInteger)_duration.selectedSegmentIndex] integerValue];
     if (![log record:@"session_start" session:session method:@"runner" attempt:@""
              details:@{@"method_indices":chosen,@"duration_seconds":@(duration),
                        @"concurrent":@(_concurrent.on)}]) {
