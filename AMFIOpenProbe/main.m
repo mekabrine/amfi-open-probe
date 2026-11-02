@@ -1156,6 +1156,7 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
     NSMutableArray<UISwitch *> *_choices;
     UISegmentedControl *_duration;
     UISwitch *_concurrent;
+    UISegmentedControl *_samplingInterval;
     UISwitch *_accepted;
     UILabel *_status;
     NSString *_previewSession;
@@ -1167,6 +1168,8 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
     NSInteger _outstanding;
     NSInteger _completedChecks;
     NSInteger _failedChecks;
+    NSInteger _newStates;
+    NSInteger _changedStates;
     NSTimeInterval _startedUptime;
     NSMutableArray<NSString *> *_recentEvents;
     UITextView *_liveConsole;
@@ -1214,7 +1217,8 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
       @{@"name":@"Mach service lookup",@"risk":@"Low: lookup failures and minor resource/battery use; no messages sent."},
       @{@"name":@"IOKit registry inventory",@"risk":@"Low: discovery-only; no user-client selectors or malformed buffers."},
       @{@"name":@"Filesystem permission matrix",@"risk":@"Low: file access checks only; no writes or restoration operations."},
-      @{@"name":@"Runtime symbol availability",@"risk":@"Low: runtime symbol checks; no private APIs invoked."}
+      @{@"name":@"Runtime symbol availability",@"risk":@"Low: runtime symbol checks; no private APIs invoked."},
+      @{@"name":@"Process stability telemetry",@"risk":@"Low: thermal, power, CPU and peak memory observations from this app only."}
     ];
     for (NSDictionary *item in methods) {
         UIStackView *line=[UIStackView new];
@@ -1253,7 +1257,11 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
         forControlEvents:UIControlEventValueChanged];
     [advancedRow addArrangedSubview:_advancedToggle];
     [_content addArrangedSubview:advancedRow];
-    [self addText:@"Runs continue until Stop is tapped, the app is backgrounded, or iPadOS terminates it. Pause suspends new checks without ending the session." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    [self addText:@"Observation cadence" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    _samplingInterval=[[UISegmentedControl alloc] initWithItems:@[@"5 sec",@"15 sec",@"30 sec"]];
+    _samplingInterval.selectedSegmentIndex=1;
+    [_content addArrangedSubview:_samplingInterval];
+    [self addText:@"5 sec collects more samples; repeated results do not mean progress. Runs continue until Stop, app backgrounding or termination. Pause prevents new checks." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     UIStackView *parallel=[UIStackView new];
     parallel.axis=UILayoutConstraintAxisHorizontal;
     parallel.alignment=UIStackViewAlignmentCenter;
@@ -1325,7 +1333,8 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
 - (void)previewTapped:(id)sender {
     NSMutableArray<NSString *> *selected=[NSMutableArray new];
     NSArray *names=@[@"Signing entitlement audit",@"Mach service lookup",
-       @"IOKit registry inventory",@"Filesystem permission matrix",@"Runtime symbol availability"];
+       @"IOKit registry inventory",@"Filesystem permission matrix",@"Runtime symbol availability",
+       @"Process stability telemetry"];
     for (NSUInteger i=0;i<_choices.count;i++)
         if (_choices[i].on) [selected addObject:names[i]];
     if (!_accepted.on) {
@@ -1395,10 +1404,13 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
     ForceLog *log=[ForceLog shared];
     if (log.lastError) { _status.text=log.lastError; return; }
     BOOL advanced=_advancedToggle.on && _advancedApproved;
+    NSArray<NSNumber *> *cadences=@[@5,@15,@30];
+    NSInteger cadence=[cadences[(NSUInteger)_samplingInterval.selectedSegmentIndex] integerValue];
     NSString *session=NSUUID.UUID.UUIDString;
     if (![log record:@"session_start" session:session method:@"runner" attempt:@""
              details:@{@"method_indices":chosen,@"duration_seconds":@"until_stopped",
-                       @"concurrent":@(_concurrent.on),@"advanced":@(advanced)}]) {
+                       @"concurrent":@(_concurrent.on),@"advanced":@(advanced),
+                       @"cadence_seconds":@(cadence),@"environment":ForceEnvironmentSnapshot()}]) {
         _status.text=log.lastError ?: @"Could not save session record";
         return;
     }
@@ -1407,6 +1419,8 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
     _paused=NO;
     _completedChecks=0;
     _failedChecks=0;
+    _newStates=0;
+    _changedStates=0;
     _startedUptime=NSProcessInfo.processInfo.systemUptime;
     [_recentEvents removeAllObjects];
     _pauseButton.enabled=YES;
@@ -1425,6 +1439,7 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
                     @"com.apple.security.application-groups"]];
             NSArray<NSString *> *items=expanded;
             NSInteger iteration=0;
+            NSMutableDictionary<NSString *,NSDictionary *> *lastStates=[NSMutableDictionary new];
             while (YES) {
                 ForcePageController *strongSelf=weakSelf;
                 if (!strongSelf) break;
@@ -1444,32 +1459,51 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
                     method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
                     attempt:attempt details:@{@"case":item,@"iteration":@(iteration)}];
                 if (!saved) break; // Never issue a request without a durable before record.
+                NSTimeInterval began=NSProcessInfo.processInfo.systemUptime;
                 NSDictionary *result=ForceBoundedCheck(method,item);
+                NSNumber *latencyMs=@((NSInteger)((NSProcessInfo.processInfo.systemUptime-began)*1000.0));
+                NSDictionary *stable=ForceStableState(method,result);
+                NSDictionary *previous=lastStates[item];
+                NSString *finding=previous ?
+                    ([previous isEqualToDictionary:stable] ? @"repeat" : @"changed") : @"first_seen";
+                NSMutableDictionary *after=[@{
+                    @"result":result ?: @{},@"iteration":@(iteration),
+                    @"case":item,@"latency_ms":latencyMs,@"finding":finding,
+                    @"stable_state":stable
+                } mutableCopy];
+                if ([finding isEqualToString:@"changed"]) after[@"previous_state"]=previous;
                 if (![log record:@"after" session:session
                     method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
-                    attempt:attempt details:@{@"result":result ?: @{},@"iteration":@(iteration)}]) break;
+                    attempt:attempt details:after]) break;
+                lastStates[item]=stable;
                 iteration++;
                 [[NSOperationQueue mainQueue] addOperationWithBlock:^{
                     ForcePageController *screen=weakSelf;
                     if (!screen || ![screen->_activeSession isEqualToString:session]) return;
                     screen->_completedChecks++;
                     if (![result[@"status"] isEqualToString:@"ok"]) screen->_failedChecks++;
-                    NSString *line=[NSString stringWithFormat:@"[%@] M%lu  %@  %@",
+                    if ([finding isEqualToString:@"first_seen"]) screen->_newStates++;
+                    if ([finding isEqualToString:@"changed"]) screen->_changedStates++;
+                    NSString *line=[NSString stringWithFormat:@"[%@] M%lu %@ %@ %@ (%@ms)",
                         [[NSISO8601DateFormatter new] stringFromDate:[NSDate date]],
-                        (unsigned long)method,item,result[@"status"] ?: @"unknown"];
+                        (unsigned long)method,
+                        [finding isEqualToString:@"changed"] ? @"CHANGED" :
+                        ([finding isEqualToString:@"first_seen"] ? @"NEW" : @"repeat"),
+                        item,result[@"status"] ?: @"unknown",latencyMs];
                     [screen->_recentEvents addObject:line];
                     if (screen->_recentEvents.count>80)
                         [screen->_recentEvents removeObjectAtIndex:0];
                     screen->_liveConsole.text=[screen->_recentEvents componentsJoinedByString:@"\n"];
                     screen->_liveSummary.text=[NSString stringWithFormat:
-                        @"%@ • %ld active workers • %ld checks • %ld errors • %.0f sec elapsed",
+                        @"%@ • %ld workers • %ld checks • %ld new • %ld changes • %ld API errors • %.0f sec",
                         screen->_paused ? @"Paused" : @"Running",
                         (long)screen->_outstanding,(long)screen->_completedChecks,
+                        (long)screen->_newStates,(long)screen->_changedStates,
                         (long)screen->_failedChecks,
                         NSProcessInfo.processInfo.systemUptime-screen->_startedUptime];
                 }];
                 // Between checks, minimize load and allow stop within one second.
-                for (int delay=0;delay<30;++delay) {
+                for (NSInteger delay=0;delay<cadence;++delay) {
                     @synchronized(strongSelf) {if (strongSelf->_stopping) break;}
                     [NSThread sleepForTimeInterval:1.0];
                 }
