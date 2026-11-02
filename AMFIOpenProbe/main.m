@@ -1251,6 +1251,67 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
             [betweenSessions addObject:@{@"case_key":key,
                  @"previous_session_state":prior,@"current_session_state":newest}];
     }
+    // Actionable evidence interpretation. A successful lookup is not an authorization grant.
+    NSMutableArray<NSDictionary *> *questions=[NSMutableArray new];
+    NSMutableArray<NSDictionary *> *signals=[NSMutableArray new];
+    NSDictionary *gameCenter=caseStats[@"0:com.apple.developer.game-center"];
+    NSDictionary *gamed=caseStats[@"1:com.apple.gamed"];
+    NSDictionary *aop=caseStats[@"2:AOPTouchHIDDriver"];
+    NSDictionary *surface=caseStats[@"2:IOSurfaceRoot"];
+    NSDictionary *gcResult=gameCenter[@"last_result"];
+    NSDictionary *gamedResult=gamed[@"last_result"];
+    if (gameCenter) {
+        id value=gcResult[@"boolean_enabled"];
+        NSString *classification=[value isKindOfClass:NSNumber.class] ?
+            ([value boolValue] ? @"enabled_boolean" : @"disabled_boolean") :
+            ([gcResult[@"entitlement_present"] boolValue] ?
+                @"present_nonboolean_value" : @"absent");
+        [signals addObject:@{@"topic":@"game_center_entitlement",
+            @"classification":classification,@"evidence":gcResult ?: @{}}];
+        [questions addObject:@{
+            @"priority":@1,
+            @"topic":@"Game Center authorization baseline",
+            @"question":@"Does the effective Game Center entitlement value match the app signing profile, and does it remain unchanged across restarts and resigning?",
+            @"evidence_required":@"Entitlement type/value, app signing identity and comparable session reports",
+            @"limitation":@"Entitlement presence does not imply privileged gamed messaging"
+        }];
+    }
+    if (gamed) {
+        [signals addObject:@{@"topic":@"gamed_name_resolution",
+            @"classification":[gamedResult[@"lookup_success"] boolValue] ?
+                 @"name_resolved" : @"name_not_resolved",
+            @"evidence":gamedResult ?: @{}}];
+        [questions addObject:@{
+            @"priority":@2,
+            @"topic":@"Mach lookup baseline",
+            @"question":@"Are lookup return codes consistent across runs, and are changes correlated with a device or signing configuration change?",
+            @"evidence_required":@"Exact return codes, OS/build metadata and before/after sessions",
+            @"limitation":@"Bootstrap name lookup alone does not establish usable authorization"
+        }];
+    }
+    if (aop || surface) {
+        [questions addObject:@{
+            @"priority":@3,
+            @"topic":@"IOKit registry baseline",
+            @"question":@"Do the registry class, parent class and service path stay stable across sessions on the same OS build?",
+            @"evidence_required":@"Registry metadata and comparable firmware versions",
+            @"limitation":@"Registry inventory does not open user clients or establish kernel memory access"
+        }];
+    }
+    if (betweenSessions.count) {
+        [questions insertObject:@{
+            @"priority":@0,@"topic":@"Cross-session differences",
+            @"question":@"Which recorded configuration changed before these observed state differences?",
+            @"evidence_required":@"Compare signing identity, firmware, selected methods and environment snapshot",
+            @"limitation":@"A changed result is a hypothesis, not proof of exploitation"
+        } atIndex:0];
+    }
+    if (questions.count==0) {
+        [questions addObject:@{@"priority":@1,@"topic":@"Missing diagnostic coverage",
+            @"question":@"Run the entitlement, Mach and IOKit inventory methods for one complete session before interpreting outcomes.",
+            @"evidence_required":@"Completed checks with nonempty per-case results",
+            @"limitation":@"No security boundary conclusion is available"}];
+    }
     NSArray *cases=[caseStats.allValues sortedArrayUsingComparator:
         ^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
             NSString *left=[NSString stringWithFormat:@"%@:%@",a[@"method"],a[@"case"]];
@@ -1267,6 +1328,12 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
         @"unmatched_before_records":@(inputs.count),
         @"per_case":cases,@"notable_observations":interesting,
         @"cross_session_differences":betweenSessions,
+        @"research_signals":signals,
+        @"next_research_questions":questions,
+        @"methodology":@{@"finding_types":@[@"first_seen",@"repeat",@"changed"],
+                         @"anomaly_rule":@"A change is a difference in recorded result state, not necessarily a vulnerability",
+                         @"case_matching":@"Method number plus case name",
+                         @"limitations":@"The report uses the latest and immediately preceding sessions; individual operations are bounded, read-only diagnostics"},
         @"interpretation":@"These are read-only checks. Successful name lookup, registered service, access(2) or symbol visibility does not demonstrate privileged authorization, kernel compromise or jailbreak."
     };
 }
