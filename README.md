@@ -14,9 +14,9 @@
 
 ### What is sampled
 
-The six read-only methods include (1) this app's signing entitlements and Boolean values, (2) Mach bootstrap service-name resolution without sending service requests, (3) IOKit registry class/parent/path discovery without connecting to user clients, (4) filesystem `stat`/`access` probes without opening or writing files, (5) runtime symbol and image-name resolution without invoking the symbols, and (6) app-local power, thermal, CPU and memory telemetry. Optional **Advanced Research** adds bounded signing-permission checks after a first-use safety review.
+The six read-only methods include (1) this app's signing entitlements and Boolean values, (2) Mach bootstrap service-name resolution and local send-right inspection without sending service requests, (3) IOKit registry class/parent/path and bounded property-key discovery without connecting to user clients, (4) filesystem `stat`/`access` probes without opening or writing files, (5) runtime symbol and image-name resolution without invoking the symbols, and (6) app-local power, thermal, CPU and memory telemetry. Optional **Advanced Research** adds bounded signing-permission checks after a first-use safety review.
 
-**Important interpretation:** a registered service, a successful bootstrap lookup, a present entitlement or a POSIX-access flag is **not** evidence of a sandbox escape, privileged service authorization, kernel read/write or process injection. The report's research questions are leads for review, not findings of an exploit. If nothing changes, another identical 30-minute run is unlikely to add value.
+**Important interpretation:** a registered service, a successful bootstrap lookup, a present entitlement or a POSIX-access flag is **not** evidence of a sandbox escape, privileged service authorization, kernel read/write or process injection. The report's research questions are leads for review, not findings of an exploit. A local Mach send right is still not evidence that a privileged operation will be accepted. If nothing changes, another identical 30-minute run is unlikely to add value.
 
 ### Reliability and limitations
 
