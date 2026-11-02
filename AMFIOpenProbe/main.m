@@ -1521,6 +1521,9 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     UIButton *_pauseButton;
     UISwitch *_advancedToggle;
     BOOL _advancedApproved;
+    NSMutableDictionary<NSString *,UISwitch *> *_milestoneSwitches;
+    UISwitch *_pauseOnChange;
+    BOOL _milestoneConsent;
 }
 - (UILabel *)addText:(NSString *)text font:(UIFont *)font {
     UILabel *label=[UILabel new];
@@ -1536,6 +1539,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     self.view.backgroundColor=UIColor.systemBackgroundColor;
     _choices=[NSMutableArray new];
     _recentEvents=[NSMutableArray new];
+    _milestoneSwitches=[NSMutableDictionary new];
     _scroll=[UIScrollView new];
     _scroll.translatesAutoresizingMaskIntoConstraints=NO;
     [self.view addSubview:_scroll];
@@ -1626,6 +1630,42 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     [study addTarget:self action:@selector(prepareResearchStudy:)
         forControlEvents:UIControlEventTouchUpInside];
     [_content addArrangedSubview:study];
+    [self addText:@"Pause rules and evidence milestones"
+        font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    [self addText:@"Choose what should pause a running session. A kernel pointer leak, service lookup, entitlement, crash, or registry entry is NOT proof of a primitive. Current bounded tests do not demonstrate kernel read/write or code injection."
+        font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    NSDictionary<NSString *,NSString *> *milestones=@{
+        @"kernel_read":@"Verified kernel read",
+        @"kernel_write":@"Verified kernel write",
+        @"sandbox_escape":@"Verified sandbox escape",
+        @"code_signing_bypass":@"Verified code-signing bypass",
+        @"cross_process_execution":@"Verified cross-process code execution",
+        @"process_injection":@"Verified process injection"
+    };
+    for (NSString *key in @[@"kernel_read",@"kernel_write",@"sandbox_escape",
+                             @"code_signing_bypass",@"cross_process_execution",@"process_injection"]) {
+        UIStackView *row=[UIStackView new];
+        row.axis=UILayoutConstraintAxisHorizontal;
+        row.alignment=UIStackViewAlignmentCenter;
+        UILabel *caption=[UILabel new];
+        caption.text=milestones[key];
+        caption.numberOfLines=0;
+        [row addArrangedSubview:caption];
+        UISwitch *toggle=[UISwitch new];
+        _milestoneSwitches[key]=toggle;
+        [row addArrangedSubview:toggle];
+        [_content addArrangedSubview:row];
+    }
+    UIStackView *changeRow=[UIStackView new];
+    changeRow.axis=UILayoutConstraintAxisHorizontal;
+    changeRow.alignment=UIStackViewAlignmentCenter;
+    UILabel *changeLabel=[UILabel new];
+    changeLabel.text=@"Pause on changed diagnostic state (not exploit success)";
+    changeLabel.numberOfLines=0;
+    [changeRow addArrangedSubview:changeLabel];
+    _pauseOnChange=[UISwitch new];
+    [changeRow addArrangedSubview:_pauseOnChange];
+    [_content addArrangedSubview:changeRow];
     [self addText:@"Risk acknowledgment" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
     [self addText:@"Even non-destructive diagnostics can cause unexpected behavior. Future tests may require additional risk warnings. A backup reduces potential data loss but cannot guarantee against a restore-required failure. Device panic and abnormal termination cannot always be distinguished by an app." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     UIStackView *ack=[UIStackView new];
@@ -1788,6 +1828,26 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     ForceLog *log=[ForceLog shared];
     if (log.lastError) { _status.text=log.lastError; return; }
     BOOL advanced=_advancedToggle.on && _advancedApproved;
+    NSMutableArray<NSString *> *pauseMilestones=[NSMutableArray new];
+    for (NSString *key in _milestoneSwitches)
+        if (_milestoneSwitches[key].on) [pauseMilestones addObject:key];
+    BOOL pauseOnChange=_pauseOnChange.on;
+    if (pauseMilestones.count && !_milestoneConsent) {
+        UIAlertController *safety=[UIAlertController alertControllerWithTitle:
+            @"Verified primitive auto-pause — safety review"
+            message:@"These switches only react to independently verified evidence, not a kernel address leak, crash, service lookup or entitlement. Current Force diagnostics do not establish the requested exploitation primitives. Unexpected device termination is not automatically a kernel panic. Back up your data and review journal exports before interpreting any result."
+            preferredStyle:UIAlertControllerStyleAlert];
+        [safety addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+        [safety addAction:[UIAlertAction actionWithTitle:@"I understand" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            self->_milestoneConsent=YES;
+            [[ForceLog shared] record:@"milestone_safety_consent"
+                session:@"interface" method:@"runner" attempt:@""
+                details:@{@"accepted":@YES}];
+            [self startForce:nil];
+        }]];
+        [self presentViewController:safety animated:YES completion:nil];
+        return;
+    }
     NSArray<NSNumber *> *cadences=@[@5,@15,@30];
     NSInteger cadence=[cadences[(NSUInteger)_samplingInterval.selectedSegmentIndex] integerValue];
     NSTimeInterval limit=_sessionLength.selectedSegmentIndex==0 ? 1800.0 : 0.0;
@@ -1796,7 +1856,8 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
              details:@{@"method_indices":chosen,
                        @"duration_seconds":limit>0 ? (id)@(limit) : (id)@"until_stopped",
                        @"concurrent":@(_concurrent.on),@"advanced":@(advanced),
-                       @"cadence_seconds":@(cadence),@"environment":ForceEnvironmentSnapshot()}]) {
+                       @"cadence_seconds":@(cadence),@"environment":ForceEnvironmentSnapshot(),
+                       @"pause_on_verified":pauseMilestones,@"pause_on_state_change":@(pauseOnChange)}]) {
         _status.text=log.lastError ?: @"Could not save session record";
         return;
     }
@@ -1892,6 +1953,30 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
                     attempt:attempt details:after];
                 if (!simultaneous) [serialGate unlock];
                 if (!afterSaved) break;
+                // The bounded diagnostics do not produce a verified exploit
+                // primitive. Do not infer one from a successful API response.
+                if (pauseOnChange && [finding isEqualToString:@"changed"]) {
+                    @synchronized(strongSelf) {
+                        if (!strongSelf->_paused && !strongSelf->_stopping) {
+                            strongSelf->_paused=YES;
+                            strongSelf->_pausedAt=NSProcessInfo.processInfo.systemUptime;
+                        }
+                    }
+                    [log record:@"auto_pause" session:session
+                        method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
+                        attempt:attempt details:@{
+                            @"reason":@"changed_diagnostic_state",
+                            @"primitive_verified":@NO,@"case":item,
+                            @"previous_state":previous ?: @{},@"new_state":stable
+                        }];
+                    [[NSOperationQueue mainQueue] addOperationWithBlock:^{
+                        ForcePageController *screen=weakSelf;
+                        if (screen && [screen->_activeSession isEqualToString:session]) {
+                            [screen->_pauseButton setTitle:@"Resume" forState:UIControlStateNormal];
+                            screen->_status.text=@"Paused on changed diagnostic state. This is NOT a verified exploit.";
+                        }
+                    }];
+                }
                 lastStates[item]=stable;
                 iteration++;
                 [[NSOperationQueue mainQueue] addOperationWithBlock:^{
