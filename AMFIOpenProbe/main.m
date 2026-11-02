@@ -2143,6 +2143,74 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
 }
 @end
 
+
+@interface GameCenterEvidenceController : UIViewController
+@end
+@implementation GameCenterEvidenceController {
+    UITextView *_output;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.title=@"Game Center baseline";
+    self.view.backgroundColor=UIColor.systemBackgroundColor;
+    UIStackView *stack=[UIStackView new];
+    stack.axis=UILayoutConstraintAxisVertical;
+    stack.spacing=14;
+    stack.translatesAutoresizingMaskIntoConstraints=NO;
+    [self.view addSubview:stack];
+    [NSLayoutConstraint activateConstraints:@[
+        [stack.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:16],
+        [stack.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:18],
+        [stack.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-18],
+        [stack.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-16]
+    ]];
+    UILabel *intro=[UILabel new];
+    intro.numberOfLines=0;
+    intro.text=@"NEW • Focused Game Center evidence\nChecks the effective signing entitlement and gamed name lookup. No privileged messages, exploit payloads or file writes are performed. Service resolution is not proof of authorization.";
+    [stack addArrangedSubview:intro];
+    UIButton *run=[UIButton buttonWithType:UIButtonTypeSystem];
+    [run setTitle:@"Run focused baseline" forState:UIControlStateNormal];
+    [run addTarget:self action:@selector(runBaseline:) forControlEvents:UIControlEventTouchUpInside];
+    [stack addArrangedSubview:run];
+    _output=[UITextView new];
+    _output.editable=NO;
+    _output.font=[UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
+    _output.backgroundColor=UIColor.secondarySystemBackgroundColor;
+    _output.layer.cornerRadius=10;
+    [stack addArrangedSubview:_output];
+    _output.text=@"Results are written to the same Force JSONL journal.";
+}
+- (void)runBaseline:(id)sender {
+    NSString *session=NSUUID.UUID.UUIDString;
+    ForceLog *log=[ForceLog shared];
+    NSArray<NSDictionary *> *items=@[
+        @{@"method":@0,@"case":@"com.apple.developer.game-center"},
+        @{@"method":@0,@"case":@"get-task-allow"},
+        @{@"method":@1,@"case":@"com.apple.gamed"}
+    ];
+    NSMutableArray *outcomes=[NSMutableArray new];
+    for (NSDictionary *item in items) {
+        NSString *method=[item[@"method"] stringValue];
+        NSString *name=item[@"case"], *attempt=NSUUID.UUID.UUIDString;
+        if (![log record:@"before" session:session method:method attempt:attempt
+                 details:@{@"case":name,@"scenario":@"game_center_baseline"}]) {
+            _output.text=[NSString stringWithFormat:@"Log error: %@",log.lastError ?: @"unknown"];
+            return;
+        }
+        NSDictionary *result=ForceBoundedCheck([item[@"method"] unsignedIntegerValue],name);
+        if (![log record:@"after" session:session method:method attempt:attempt
+                 details:@{@"case":name,@"result":result ?: @{},@"scenario":@"game_center_baseline"}]) {
+            _output.text=[NSString stringWithFormat:@"Result log error: %@",log.lastError ?: @"unknown"];
+            return;
+        }
+        [outcomes addObject:@{@"case":name,@"result":result ?: @{}}];
+    }
+    NSData *data=[NSJSONSerialization dataWithJSONObject:outcomes options:NSJSONWritingPrettyPrinted error:nil];
+    _output.text=[NSString stringWithFormat:@"Read-only baseline complete.\nSession: %@\n\n%@",
+        session,[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @""];
+}
+@end
+
 @interface ProbeHomeController : UITableViewController
 @end
 @implementation ProbeHomeController
@@ -2157,33 +2225,35 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     self.tableView.estimatedRowHeight = 60;
 }
 - (NSInteger)numberOfSectionsInTableView:(UITableView *)tableView {
-    return 5;
+    return 6;
 }
 - (NSString *)tableView:(UITableView *)tableView titleForHeaderInSection:(NSInteger)section {
-    return @[@"App data", @"HID / IOHIDFamily", @"Kernel services", @"Kernel information leaks", @"Research runner"][section];
+    return @[@"NEW • Targeted tests", @"Automated research", @"Kernel information leaks", @"HID / IOHIDFamily", @"Kernel services", @"App data"][section];
 }
 - (NSInteger)tableView:(UITableView *)tableView numberOfRowsInSection:(NSInteger)section {
-    return section == 0 ? 1 : (section == 1 ? 4 : 1);
+    return section == 3 ? 4 : 1;
 }
 - (NSString *)nameAt:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) return @"Erosion file-change validation";
-    if (indexPath.section == 2) return @"AppleAVE2 and service opens";
-    if (indexPath.section == 3) return @"AIO kqueue CVE-2026-84530";
-    if (indexPath.section == 4) return @"Force — live diagnostics";
-    return @[@"HID service reachability",
-             @"HID provider inventory",
-             @"HID manager class opens",
-             @"AOPTouch FastPath type 2"][indexPath.row];
+    switch (indexPath.section) {
+        case 0: return @"NEW • Game Center authorization baseline";
+        case 1: return @"Force — automated diagnostics";
+        case 2: return @"AIO kqueue CVE-2026-84530";
+        case 4: return @"AppleAVE2 and service opens";
+        case 5: return @"Erosion file-change validation";
+        default: return @[@"HID service reachability", @"HID provider inventory",
+                          @"HID manager class opens", @"AOPTouch FastPath type 2"][indexPath.row];
+    }
 }
 - (NSString *)noteAt:(NSIndexPath *)indexPath {
-    if (indexPath.section == 0) return @"Existing cross-app data-file write validation";
-    if (indexPath.section == 2) return @"One-time service access checks";
-    if (indexPath.section == 3) return @"AIO work-entry heap pointer disclosure, read-only";
-    if (indexPath.section == 4) return @"Live checks, advanced signing review and JSONL export";
-    return @[@"Registered services; manager connection",
-             @"Registry only — no connection opens",
-             @"Standard HID manager client opens",
-             @"User-client type 2 open only — no exploit"][indexPath.row];
+    switch (indexPath.section) {
+        case 0: return @"NEW: Compare entitlement and gamed lookup; export results through Force";
+        case 1: return @"30-minute study, anomalies, pause rules and research package";
+        case 2: return @"Kernel AIO heap address disclosure; not arbitrary kernel access";
+        case 4: return @"One-time service checks";
+        case 5: return @"Historical app-owned file validation";
+        default: return @[@"HID service discovery", @"Registry inventory",
+                          @"Standard manager connection", @"FastPath type-2 connection"][indexPath.row];
+    }
 }
 - (UITableViewCell *)tableView:(UITableView *)tableView cellForRowAtIndexPath:(NSIndexPath *)indexPath {
     UITableViewCell *cell = [tableView dequeueReusableCellWithIdentifier:@"ResearchTest"];
@@ -2192,34 +2262,40 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     cell.textLabel.text = [self nameAt:indexPath];
     cell.detailTextLabel.text = [self noteAt:indexPath];
     cell.detailTextLabel.numberOfLines = 0;
+    BOOL recent=indexPath.section==0;
+    cell.contentView.backgroundColor=recent ?
+        [UIColor.systemYellowColor colorWithAlphaComponent:0.12] : UIColor.clearColor;
+    cell.contentView.layer.cornerRadius=recent ? 10 : 0;
+    cell.contentView.layer.borderWidth=recent ? 2 : 0;
+    cell.contentView.layer.borderColor=recent ? UIColor.systemOrangeColor.CGColor : UIColor.clearColor.CGColor;
+    cell.textLabel.textColor=recent ? UIColor.systemOrangeColor : UIColor.labelColor;
     cell.accessoryType = UITableViewCellAccessoryDisclosureIndicator;
     return cell;
 }
 - (void)tableView:(UITableView *)tableView didSelectRowAtIndexPath:(NSIndexPath *)indexPath {
     [tableView deselectRowAtIndexPath:indexPath animated:YES];
     UIViewController *page;
-    if (indexPath.section == 0) {
-        page = [ContainerChangeController new];
-    } else if (indexPath.section == 2) {
-        page = [ProbeController new];
-    } else if (indexPath.section == 3) {
-        page = [AIODisclosureController new];
-    } else if (indexPath.section == 4) {
-        page = [ForcePageController new];
-    } else {
-        page = [[HIDReachabilityController alloc] initWithTestMode:(HIDTestMode)indexPath.row];
+    switch (indexPath.section) {
+        case 0: page=[GameCenterEvidenceController new]; break;
+        case 1: page=[ForcePageController new]; break;
+        case 2: page=[AIODisclosureController new]; break;
+        case 3: page=[[HIDReachabilityController alloc] initWithTestMode:(HIDTestMode)indexPath.row]; break;
+        case 4: page=[ProbeController new]; break;
+        default: page=[ContainerChangeController new]; break;
     }
     [self.navigationController pushViewController:page animated:YES];
 }
 - (NSString *)tableView:(UITableView *)tableView titleForFooterInSection:(NSInteger)section {
-    if (section == 0)
-        return @"An Erosion write to the probe's own Documents file was already verified. This page does not grant cross-app access itself.";
-    if (section == 1)
-        return @"These are historical research checks, not kernel memory access. No tests run automatically.";
-    if (section == 2) return @"Do not repeat completed access checks without a new question to test.";
-    if (section == 3) return @"CVE-2026-84530 reveals an AIO heap allocation address, not code execution.";
-    return @"Force Step 1: interface only. It does not run diagnostics or fuzz kernel interfaces.";
+    switch (section) {
+        case 0: return @"Orange outline marks tests introduced in this update.";
+        case 1: return @"Automated bounded diagnostics, not autonomous exploit payloads.";
+        case 2: return @"AIO disclosure is an address leak, not kernel read/write.";
+        case 3: return @"Historical HID research.";
+        case 4: return @"Historical service connection checks.";
+        default: return @"Historical Erosion file-change check.";
+    }
 }
+
 @end
 
 @interface ProbeAppDelegate : UIResponder <UIApplicationDelegate>
