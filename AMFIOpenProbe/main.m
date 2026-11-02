@@ -1316,7 +1316,7 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
             @"topic":@"Game Center authorization baseline",
             @"question":@"Does the effective Game Center entitlement value match the app signing profile, and does it remain unchanged across restarts and resigning?",
             @"evidence_required":@"Entitlement type/value, app signing identity and comparable session reports",
-            @"limitation":@"Entitlement presence does not imply privileged gamedStats messaging"
+            @"limitation":@"Entitlement presence does not imply privileged gamed messaging"
         }];
     }
     if (gamedStats) {
