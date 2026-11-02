@@ -1283,6 +1283,11 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
     UISegmentedControl *_duration;
     UISwitch *_concurrent;
     UISegmentedControl *_samplingInterval;
+    UISegmentedControl *_sessionLength;
+    NSTimeInterval _activeStarted;
+    NSTimeInterval _pausedAt;
+    NSTimeInterval _pausedTotal;
+    NSTimeInterval _runLimit;
     UISwitch *_accepted;
     UILabel *_status;
     NSString *_previewSession;
@@ -1387,7 +1392,11 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
     _samplingInterval=[[UISegmentedControl alloc] initWithItems:@[@"5 sec",@"15 sec",@"30 sec"]];
     _samplingInterval.selectedSegmentIndex=1;
     [_content addArrangedSubview:_samplingInterval];
-    [self addText:@"5 sec collects more samples; repeated results do not mean progress. Runs continue until Stop, app backgrounding or termination. Pause prevents new checks." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    [self addText:@"Session length" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    _sessionLength=[[UISegmentedControl alloc] initWithItems:@[@"30-minute study",@"Until stopped"]];
+    _sessionLength.selectedSegmentIndex=0;
+    [_content addArrangedSubview:_sessionLength];
+    [self addText:@"The 30-minute timer excludes paused time. Sequential mode rotates between every selected method, rather than exhausting the timer on the first method. Runs stop when the app backgrounds." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     UIStackView *parallel=[UIStackView new];
     parallel.axis=UILayoutConstraintAxisHorizontal;
     parallel.alignment=UIStackViewAlignmentCenter;
@@ -1537,9 +1546,11 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
     BOOL advanced=_advancedToggle.on && _advancedApproved;
     NSArray<NSNumber *> *cadences=@[@5,@15,@30];
     NSInteger cadence=[cadences[(NSUInteger)_samplingInterval.selectedSegmentIndex] integerValue];
+    NSTimeInterval limit=_sessionLength.selectedSegmentIndex==0 ? 1800.0 : 0.0;
     NSString *session=NSUUID.UUID.UUIDString;
     if (![log record:@"session_start" session:session method:@"runner" attempt:@""
-             details:@{@"method_indices":chosen,@"duration_seconds":@"until_stopped",
+             details:@{@"method_indices":chosen,
+                       @"duration_seconds":limit>0 ? (id)@(limit) : (id)@"until_stopped",
                        @"concurrent":@(_concurrent.on),@"advanced":@(advanced),
                        @"cadence_seconds":@(cadence),@"environment":ForceEnvironmentSnapshot()}]) {
         _status.text=log.lastError ?: @"Could not save session record";
@@ -1553,12 +1564,20 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
     _newStates=0;
     _changedStates=0;
     _startedUptime=NSProcessInfo.processInfo.systemUptime;
+    _activeStarted=_startedUptime;
+    _pausedTotal=0;
+    _pausedAt=0;
+    _runLimit=limit;
     [_recentEvents removeAllObjects];
     _pauseButton.enabled=YES;
     [_pauseButton setTitle:@"Pause" forState:UIControlStateNormal];
     _outstanding=chosen.count;
     _forceQueue=[NSOperationQueue new];
-    _forceQueue.maxConcurrentOperationCount=_concurrent.on ? (NSInteger)chosen.count : 1;
+    // Every worker must be scheduled: serializing an infinite worker queue
+    // used to starve all selected methods after the first.
+    _forceQueue.maxConcurrentOperationCount=(NSInteger)chosen.count;
+    BOOL simultaneous=_concurrent.on;
+    NSLock *serialGate=[NSLock new];
     __weak ForcePageController *weakSelf=self;
     for (NSNumber *number in chosen) {
         NSUInteger method=number.unsignedIntegerValue;
@@ -1580,16 +1599,37 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
                     isPaused=strongSelf->_paused;
                 }
                 if (shouldStop) break;
+                NSTimeInterval active=0;
+                @synchronized(strongSelf) {
+                    NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+                    active=(strongSelf->_paused ? strongSelf->_pausedAt : now)
+                           - strongSelf->_activeStarted - strongSelf->_pausedTotal;
+                }
+                if (limit>0 && active>=limit) break;
                 if (isPaused) {
                     [NSThread sleepForTimeInterval:0.2];
                     continue;
                 }
                 NSString *item=items[(NSUInteger)iteration%items.count];
+                if (!simultaneous) [serialGate lock];
+                // Stop/pause may have been requested while waiting for the gate.
+                BOOL abort=NO;
+                @synchronized(strongSelf) {
+                    abort=strongSelf->_stopping || strongSelf->_paused;
+                }
+                if (abort) {
+                    if (!simultaneous) [serialGate unlock];
+                    if (strongSelf->_stopping) break;
+                    continue;
+                }
                 NSString *attempt=NSUUID.UUID.UUIDString;
                 BOOL saved=[log record:@"before" session:session
                     method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
                     attempt:attempt details:@{@"case":item,@"iteration":@(iteration)}];
-                if (!saved) break; // Never issue a request without a durable before record.
+                if (!saved) {
+                    if (!simultaneous) [serialGate unlock];
+                    break; // Never issue a request without a durable before record.
+                }
                 NSTimeInterval began=NSProcessInfo.processInfo.systemUptime;
                 NSDictionary *result=ForceBoundedCheck(method,item);
                 NSNumber *latencyMs=@((NSInteger)((NSProcessInfo.processInfo.systemUptime-began)*1000.0));
@@ -1603,9 +1643,11 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
                     @"stable_state":stable
                 } mutableCopy];
                 if ([finding isEqualToString:@"changed"]) after[@"previous_state"]=previous;
-                if (![log record:@"after" session:session
+                BOOL afterSaved=[log record:@"after" session:session
                     method:[NSString stringWithFormat:@"%lu",(unsigned long)method]
-                    attempt:attempt details:after]) break;
+                    attempt:attempt details:after];
+                if (!simultaneous) [serialGate unlock];
+                if (!afterSaved) break;
                 lastStates[item]=stable;
                 iteration++;
                 [[NSOperationQueue mainQueue] addOperationWithBlock:^{
@@ -1631,12 +1673,19 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
                         (long)screen->_outstanding,(long)screen->_completedChecks,
                         (long)screen->_newStates,(long)screen->_changedStates,
                         (long)screen->_failedChecks,
-                        NSProcessInfo.processInfo.systemUptime-screen->_startedUptime];
+                        (screen->_paused ? screen->_pausedAt :
+                            NSProcessInfo.processInfo.systemUptime)
+                            -screen->_activeStarted-screen->_pausedTotal];
                 }];
-                // Between checks, minimize load and allow stop within one second.
-                for (NSInteger delay=0;delay<cadence;++delay) {
-                    @synchronized(strongSelf) {if (strongSelf->_stopping) break;}
-                    [NSThread sleepForTimeInterval:1.0];
+                // A paused session must not consume its 30-minute active budget.
+                for (NSInteger delay=0;delay<cadence;) {
+                    BOOL stop=NO, paused=NO;
+                    @synchronized(strongSelf) {
+                        stop=strongSelf->_stopping; paused=strongSelf->_paused;
+                    }
+                    if (stop) break;
+                    [NSThread sleepForTimeInterval:paused ? 0.2 : 1.0];
+                    if (!paused) delay++;
                 }
             }
             [log record:@"worker_end" session:session
@@ -1664,7 +1713,15 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
 - (void)togglePause:(id)sender {
     if (!_activeSession) return;
     @synchronized(self) {
-        _paused=!_paused;
+        NSTimeInterval now=NSProcessInfo.processInfo.systemUptime;
+        if (!_paused) {
+            _paused=YES;
+            _pausedAt=now;
+        } else {
+            _pausedTotal+=now-_pausedAt;
+            _pausedAt=0;
+            _paused=NO;
+        }
     }
     [_pauseButton setTitle:_paused ? @"Resume" : @"Pause" forState:UIControlStateNormal];
     [[ForceLog shared] record:_paused ? @"paused" : @"resumed"
@@ -1689,7 +1746,14 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 }
 - (void)stopForce:(id)sender {
-    @synchronized(self) {_stopping=YES; _paused=NO;}
+    @synchronized(self) {
+        _stopping=YES;
+        if (_paused) {
+            _pausedTotal+=NSProcessInfo.processInfo.systemUptime-_pausedAt;
+            _pausedAt=0;
+            _paused=NO;
+        }
+    }
     _pauseButton.enabled=NO;
     if (_activeSession)
         [[ForceLog shared] record:@"stop_requested" session:_activeSession
