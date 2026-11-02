@@ -1021,10 +1021,17 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         if (kr==KERN_SUCCESS && bootstrap!=MACH_PORT_NULL)
             kr=lookup(bootstrap,item.UTF8String,&service);
         if (bootstrap!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(),bootstrap);
+        mach_port_type_t portRights=0;
+        kern_return_t rightsReturn=service!=MACH_PORT_NULL ?
+            mach_port_type(mach_task_self(),service,&portRights) : KERN_INVALID_NAME;
+        BOOL hasSendRight=rightsReturn==KERN_SUCCESS &&
+            ((portRights & MACH_PORT_TYPE_SEND)!=0);
         if (service!=MACH_PORT_NULL) mach_port_deallocate(mach_task_self(),service);
         return @{@"status":@"ok",@"return_code":@(kr),
                  @"lookup_success":@(kr==KERN_SUCCESS && service!=MACH_PORT_NULL),
-                 @"note":@"Bootstrap name resolution only; service authorization not tested"};
+                 @"send_right_observed":@(hasSendRight),
+                 @"port_rights_check_return_code":@(rightsReturn),
+                 @"note":@"Bootstrap name resolution and local right inspection only; no service message sent"};
     }
     if (method==2) {
         CFMutableDictionaryRef match=IOServiceMatching(item.UTF8String);
@@ -1038,6 +1045,30 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         kern_return_t classReturn=IOObjectGetClass(object,className);
         io_string_t registryPath={0};
         kern_return_t pathReturn=IORegistryEntryGetPath(object,kIOServicePlane,registryPath);
+        CFMutableDictionaryRef properties=NULL;
+        kern_return_t propertyReturn=IORegistryEntryCreateCFProperties(
+            object,&properties,kCFAllocatorDefault,0);
+        NSMutableArray<NSString *> *propertyNames=[NSMutableArray new];
+        NSUInteger propertyCount=0;
+        if (propertyReturn==KERN_SUCCESS && properties) {
+            NSDictionary *dictionary=(__bridge NSDictionary *)properties;
+            propertyCount=dictionary.count;
+            for (id key in dictionary) {
+                if (![key isKindOfClass:NSString.class]) continue;
+                NSString *name=(NSString *)key;
+                // Avoid persisting identifiers or opaque values in exported logs.
+                NSString *lower=name.lowercaseString;
+                if ([lower containsString:@"serial"] ||
+                    [lower containsString:@"uuid"] ||
+                    [lower containsString:@"unique"] ||
+                    [lower containsString:@"address"]) continue;
+                if (name.length<=80) [propertyNames addObject:name];
+            }
+            [propertyNames sortUsingSelector:@selector(compare:)];
+            if (propertyNames.count>24)
+                [propertyNames removeObjectsInRange:NSMakeRange(24,propertyNames.count-24)];
+            CFRelease(properties);
+        }
         io_registry_entry_t parent=IO_OBJECT_NULL;
         kern_return_t parentReturn=IORegistryEntryGetParentEntry(object,kIOServicePlane,&parent);
         io_name_t parentClass={0};
@@ -1053,7 +1084,10 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
                      [NSString stringWithUTF8String:parentClass] : @"unavailable",
                  @"registry_path":pathReturn==KERN_SUCCESS ?
                      [NSString stringWithUTF8String:registryPath] : @"unavailable",
-                 @"note":@"Registry metadata only; no user-client connection attempted"};
+                 @"property_query_return_code":@(propertyReturn),
+                 @"property_count":@(propertyCount),
+                 @"property_key_sample":propertyNames,
+                 @"note":@"Registry class, path and property-key metadata only; no user-client connection attempted"};
     }
     if (method==3) {
         NSDictionary<NSString *,NSString *> *paths=@{
@@ -1136,6 +1170,7 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
     return @{
         @"system":device.systemName ?: @"unknown",
         @"os_version":device.systemVersion ?: @"unknown",
+        @"os_build_description":NSProcessInfo.processInfo.operatingSystemVersionString ?: @"unknown",
         @"kernel_release":code==0 ? [NSString stringWithUTF8String:machine.release] : @"unknown",
         @"device_machine":code==0 ? [NSString stringWithUTF8String:machine.machine] : @"unknown",
         @"bundle_id":bundle.bundleIdentifier ?: @"unknown",
@@ -1341,7 +1376,8 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
             @"evidence":@{@"entitlement_boolean_enabled":game[@"boolean_enabled"] ?: [NSNull null],
                           @"entitlement_value_type":game[@"value_type"] ?: @"not_observed",
                           @"gamed_name_resolvable":@(resolvable),
-                          @"gamed_return_code":gamed[@"return_code"] ?: [NSNull null]},
+                          @"gamed_return_code":gamed[@"return_code"] ?: [NSNull null],
+                          @"gamed_send_right_observed":gamed[@"send_right_observed"] ?: @NO},
             @"assessment":entitled && resolvable ?
                 @"Both signing entitlement and name resolution were observed. Neither demonstrates a privileged service call." :
                 @"At least one prerequisite was absent or unverified; service authorization remains unknown.",
@@ -1357,7 +1393,9 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
             @"topic":[NSString stringWithFormat:@"IOKit registry: %@",target],
             @"evidence":@{@"registered":io[@"service_registered"] ?: @NO,
                           @"registry_class":io[@"service_class"] ?: @"unknown",
-                          @"parent_class":io[@"parent_class"] ?: @"unknown"},
+                          @"parent_class":io[@"parent_class"] ?: @"unknown",
+                          @"registry_property_count":io[@"property_count"] ?: @0,
+                          @"registry_property_keys":io[@"property_key_sample"] ?: @[]},
             @"assessment":@"Registry discovery only; access to a user client or kernel memory was not tested.",
             @"next_research_question":@"Does an existing read-only inventory or public interface document this service's permitted capabilities?",
             @"proof_level":@"registry_metadata_only"
