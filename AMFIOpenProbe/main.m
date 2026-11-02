@@ -1479,6 +1479,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     NSTimeInterval _startedUptime;
     NSMutableArray<NSString *> *_recentEvents;
     UITextView *_liveConsole;
+    UITextView *_researchPreview;
     UILabel *_liveSummary;
     UIButton *_pauseButton;
     UISwitch *_advancedToggle;
@@ -1603,7 +1604,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     [selfTest addTarget:self action:@selector(testJournal:) forControlEvents:UIControlEventTouchUpInside];
     [_content addArrangedSubview:selfTest];
     UIButton *package=[UIButton buttonWithType:UIButtonTypeSystem];
-    [package setTitle:@"Export research package (report + JSONL)" forState:UIControlStateNormal];
+    [package setTitle:@"Export research package (memo + report + JSONL)" forState:UIControlStateNormal];
     [package addTarget:self action:@selector(exportResearchPackage:)
         forControlEvents:UIControlEventTouchUpInside];
     [_content addArrangedSubview:package];
@@ -1638,6 +1639,16 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     [_liveConsole.heightAnchor constraintEqualToConstant:240].active=YES;
     [_content addArrangedSubview:_liveConsole];
     _liveConsole.text=@"Live event console will show real completed checks. The full history remains in force-research.jsonl.";
+    [self addText:@"Research briefing" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    _researchPreview=[UITextView new];
+    _researchPreview.editable=NO;
+    _researchPreview.selectable=YES;
+    _researchPreview.font=[UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
+    _researchPreview.backgroundColor=UIColor.secondarySystemBackgroundColor;
+    _researchPreview.layer.cornerRadius=8;
+    [_researchPreview.heightAnchor constraintEqualToConstant:200].active=YES;
+    [_content addArrangedSubview:_researchPreview];
+    _researchPreview.text=@"Finish a run or export the research package to generate the evidence review.";
     _status=[self addText:[NSString stringWithFormat:@"Ready. Journal: %@",[ForceLog shared].path]
         font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(forceBackgrounded:)
@@ -1875,7 +1886,13 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
                     session,(long)strongSelf->_outstanding,(unsigned long)method,log.path];
                 if (strongSelf->_outstanding==0) {
                     [log record:@"session_end" session:session method:@"runner"
-                        attempt:@"" details:@{@"stopped":@(strongSelf->_stopping)}];
+                        attempt:@"" details:@{
+                            @"stopped":@(strongSelf->_stopping),
+                            @"completed_checks":@(strongSelf->_completedChecks),
+                            @"observed_changes":@(strongSelf->_changedStates),
+                            @"errors":@(strongSelf->_failedChecks)}];
+                    NSDictionary *report=ForceResearchReport(log.path);
+                    strongSelf->_researchPreview.text=ForceResearchMemo(report);
                     strongSelf->_activeSession=nil;
                     strongSelf->_forceQueue=nil;
                     strongSelf->_pauseButton.enabled=NO;
@@ -1952,8 +1969,20 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
         _status.text=[NSString stringWithFormat:@"Report write failed: %@",error.localizedDescription];
         return;
     }
+    NSString *memo=ForceResearchMemo(report);
+    NSString *memoPath=[[journal.path stringByDeletingLastPathComponent]
+        stringByAppendingPathComponent:@"force-research-briefing.txt"];
+    NSError *memoError=nil;
+    if (![memo writeToFile:memoPath atomically:YES
+                   encoding:NSUTF8StringEncoding error:&memoError]) {
+        _status.text=[NSString stringWithFormat:@"Memo write failed: %@",
+            memoError.localizedDescription ?: @"unknown"];
+        return;
+    }
+    _researchPreview.text=memo;
     UIActivityViewController *share=[[UIActivityViewController alloc]
-        initWithActivityItems:@[[NSURL fileURLWithPath:reportPath],
+        initWithActivityItems:@[[NSURL fileURLWithPath:memoPath],
+            [NSURL fileURLWithPath:reportPath],
             [NSURL fileURLWithPath:journal.path]] applicationActivities:nil];
     share.popoverPresentationController.sourceView=(UIView *)sender;
     [self presentViewController:share animated:YES completion:nil];
