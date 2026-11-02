@@ -2207,7 +2207,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     _output.backgroundColor=UIColor.secondarySystemBackgroundColor;
     _output.layer.cornerRadius=10;
     [stack addArrangedSubview:_output];
-    _output.text=@"Ready. Eight read-only checks across Game Center, AOPTouch, IOSurface, framebuffer, sandbox, and signing. AIO's existing disclosure test remains on its separate page; Test All does not trigger memory-disclosure or mutation experiments.";
+    _output.text=@"Ready. Eight safe prerequisite checks and coverage status for recent exploit candidates. Copy All Results produces one JSON report. Candidates marked untested are NOT executed.";
 }
 - (void)copyResults:(id)sender {
     if (!_latestJSON.length) return;
@@ -2256,6 +2256,26 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
     [journal record:@"session_end" session:session method:@"updated_suite" attempt:@""
            details:@{@"completed_checks":@(results.count),
                      @"expected_checks":@(tests.count),@"error":failure ?: [NSNull null]}];
+    NSArray<NSDictionary *> *candidateCoverage=@[
+        @{@"candidate":@"Game Center CVE-2026-64740", @"tested":@YES,
+          @"scope":@"entitlement and Mach name lookup only",@"exploit_verified":@NO},
+        @{@"candidate":@"AOPTouch / IOHIDFamily", @"tested":@YES,
+          @"scope":@"registry discovery only",@"exploit_verified":@NO},
+        @{@"candidate":@"IOSurface", @"tested":@YES,
+          @"scope":@"registry discovery only",@"exploit_verified":@NO},
+        @{@"candidate":@"IOMobileFramebuffer", @"tested":@YES,
+          @"scope":@"registry discovery only",@"exploit_verified":@NO},
+        @{@"candidate":@"AIO CVE-2026-84530", @"tested":@NO,
+          @"scope":@"existing separate page; omitted from one-tap suite",@"exploit_verified":@NO},
+        @{@"candidate":@"Accounts CVE-2026-112612", @"tested":@NO,
+          @"scope":@"trust-paired-device path; no validated app-side test",@"exploit_verified":@NO},
+        @{@"candidate":@"CoreGraphics CVE-2026-86950", @"tested":@NO,
+          @"scope":@"PDF font issue; no validated bounded on-device test",@"exploit_verified":@NO},
+        @{@"candidate":@"CoreGraphics stack-corruption research", @"tested":@NO,
+          @"scope":@"other firmware; no 23E261 validation",@"exploit_verified":@NO},
+        @{@"candidate":@"MobileContainerManager geod / InstallCoordination", @"tested":@NO,
+          @"scope":@"public research; no verified reversible 23E261 test",@"exploit_verified":@NO}
+    ];
     NSDictionary *report=@{
         @"schema":@1,@"suite":@"updated_read_only_research",
         @"session":session,@"environment":ForceEnvironmentSnapshot(),
@@ -2263,6 +2283,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
         @"status":failure ? @"incomplete" : @"complete",
         @"error":failure ?: [NSNull null],
         @"exploit_executed":@NO,
+        @"candidate_coverage":candidateCoverage,
         @"interpretation":@"These bounded checks demonstrate only prerequisite metadata or ordinary access status. No kernel R/W, cross-process injection, or sandbox escape was attempted or verified.",
         @"results":results
     };
