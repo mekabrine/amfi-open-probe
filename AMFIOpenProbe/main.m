@@ -1295,14 +1295,14 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
                  @"previous_session_state":prior,@"current_session_state":newest}];
     }
     // Actionable evidence interpretation. A successful lookup is not an authorization grant.
-    NSMutableArray<NSDictionary *> *questions=[NSMutableArray new];
+    NSMutableArray<NSDictionary *> *prioritizedQuestions=[NSMutableArray new];
     NSMutableArray<NSDictionary *> *signals=[NSMutableArray new];
     NSDictionary *gameCenter=caseStats[@"0:com.apple.developer.game-center"];
-    NSDictionary *gamed=caseStats[@"1:com.apple.gamed"];
+    NSDictionary *gamedStats=caseStats[@"1:com.apple.gamedStats"];
     NSDictionary *aop=caseStats[@"2:AOPTouchHIDDriver"];
     NSDictionary *surface=caseStats[@"2:IOSurfaceRoot"];
     NSDictionary *gcResult=gameCenter[@"last_result"];
-    NSDictionary *gamedResult=gamed[@"last_result"];
+    NSDictionary *gamedStatsResult=gamedStats[@"last_result"];
     if (gameCenter) {
         id value=gcResult[@"boolean_enabled"];
         NSString *classification=[value isKindOfClass:NSNumber.class] ?
@@ -1311,20 +1311,20 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
                 @"present_nonboolean_value" : @"absent");
         [signals addObject:@{@"topic":@"game_center_entitlement",
             @"classification":classification,@"evidence":gcResult ?: @{}}];
-        [questions addObject:@{
+        [prioritizedQuestions addObject:@{
             @"priority":@1,
             @"topic":@"Game Center authorization baseline",
             @"question":@"Does the effective Game Center entitlement value match the app signing profile, and does it remain unchanged across restarts and resigning?",
             @"evidence_required":@"Entitlement type/value, app signing identity and comparable session reports",
-            @"limitation":@"Entitlement presence does not imply privileged gamed messaging"
+            @"limitation":@"Entitlement presence does not imply privileged gamedStats messaging"
         }];
     }
-    if (gamed) {
-        [signals addObject:@{@"topic":@"gamed_name_resolution",
-            @"classification":[gamedResult[@"lookup_success"] boolValue] ?
+    if (gamedStats) {
+        [signals addObject:@{@"topic":@"gamedStats_name_resolution",
+            @"classification":[gamedStatsResult[@"lookup_success"] boolValue] ?
                  @"name_resolved" : @"name_not_resolved",
-            @"evidence":gamedResult ?: @{}}];
-        [questions addObject:@{
+            @"evidence":gamedStatsResult ?: @{}}];
+        [prioritizedQuestions addObject:@{
             @"priority":@2,
             @"topic":@"Mach lookup baseline",
             @"question":@"Are lookup return codes consistent across runs, and are changes correlated with a device or signing configuration change?",
@@ -1333,7 +1333,7 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
         }];
     }
     if (aop || surface) {
-        [questions addObject:@{
+        [prioritizedQuestions addObject:@{
             @"priority":@3,
             @"topic":@"IOKit registry baseline",
             @"question":@"Do the registry class, parent class and service path stay stable across sessions on the same OS build?",
@@ -1342,15 +1342,15 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
         }];
     }
     if (betweenSessions.count) {
-        [questions insertObject:@{
+        [prioritizedQuestions insertObject:@{
             @"priority":@0,@"topic":@"Cross-session differences",
             @"question":@"Which recorded configuration changed before these observed state differences?",
             @"evidence_required":@"Compare signing identity, firmware, selected methods and environment snapshot",
             @"limitation":@"A changed result is a hypothesis, not proof of exploitation"
         } atIndex:0];
     }
-    if (questions.count==0) {
-        [questions addObject:@{@"priority":@1,@"topic":@"Missing diagnostic coverage",
+    if (prioritizedQuestions.count==0) {
+        [prioritizedQuestions addObject:@{@"priority":@1,@"topic":@"Missing diagnostic coverage",
             @"question":@"Run the entitlement, Mach and IOKit inventory methods for one complete session before interpreting outcomes.",
             @"evidence_required":@"Completed checks with nonempty per-case results",
             @"limitation":@"No security boundary conclusion is available"}];
@@ -1439,7 +1439,7 @@ static NSDictionary *ForceResearchReport(NSString *journalPath) {
         @"per_case":cases,@"notable_observations":interesting,
         @"cross_session_differences":betweenSessions,
         @"research_signals":signals,
-        @"next_research_questions":questions,
+        @"next_research_questions":prioritizedQuestions,
         @"methodology":@{@"finding_types":@[@"first_seen",@"repeat",@"changed"],
                          @"anomaly_rule":@"A change is a difference in recorded result state, not necessarily a vulnerability",
                          @"case_matching":@"Method number plus case name",
