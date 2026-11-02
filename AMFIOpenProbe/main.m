@@ -2144,70 +2144,135 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
 @end
 
 
+
 @interface GameCenterEvidenceController : UIViewController
 @end
 @implementation GameCenterEvidenceController {
     UITextView *_output;
+    UIButton *_allButton;
+    UIButton *_copyButton;
+    NSString *_latestJSON;
+}
+- (NSArray<NSDictionary *> *)updatedTests {
+    return @[
+        @{@"track":@"Game Center", @"name":@"Effective Game Center entitlement",
+          @"method":@0, @"case":@"com.apple.developer.game-center"},
+        @{@"track":@"Game Center", @"name":@"Debug entitlement baseline",
+          @"method":@0, @"case":@"get-task-allow"},
+        @{@"track":@"Game Center", @"name":@"gamed send-right lookup",
+          @"method":@1, @"case":@"com.apple.gamed"},
+        @{@"track":@"AOPTouch", @"name":@"AOPTouch registry reachability",
+          @"method":@2, @"case":@"AOPTouchHIDDriver"},
+        @{@"track":@"IOSurface", @"name":@"IOSurface registry reachability",
+          @"method":@2, @"case":@"IOSurfaceRoot"},
+        @{@"track":@"Framebuffer", @"name":@"Framebuffer registry reachability",
+          @"method":@2, @"case":@"IOMobileFramebuffer"},
+        @{@"track":@"Sandbox", @"name":@"Restricted mobile-library metadata",
+          @"method":@3, @"case":@"mobile_library"},
+        @{@"track":@"Signing", @"name":@"Platform entitlement baseline",
+          @"method":@0, @"case":@"platform-application"}
+    ];
 }
 - (void)viewDidLoad {
     [super viewDidLoad];
-    self.title=@"Game Center baseline";
+    self.title=@"NEW • Test Suite";
     self.view.backgroundColor=UIColor.systemBackgroundColor;
     UIStackView *stack=[UIStackView new];
     stack.axis=UILayoutConstraintAxisVertical;
-    stack.spacing=14;
+    stack.spacing=12;
     stack.translatesAutoresizingMaskIntoConstraints=NO;
     [self.view addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
-        [stack.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:16],
-        [stack.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:18],
-        [stack.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-18],
-        [stack.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-16]
+        [stack.topAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor constant:12],
+        [stack.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:16],
+        [stack.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-16],
+        [stack.bottomAnchor constraintEqualToAnchor:self.view.safeAreaLayoutGuide.bottomAnchor constant:-12]
     ]];
     UILabel *intro=[UILabel new];
     intro.numberOfLines=0;
-    intro.text=@"NEW • Focused Game Center evidence\nChecks the effective signing entitlement and gamed name lookup. No privileged messages, exploit payloads or file writes are performed. Service resolution is not proof of authorization.";
+    intro.text=@"NEW IN THIS UPDATE • Orange-highlighted suite\nRun all current focused research checks once, then copy one JSON report. These are bounded, read-only prerequisites and access checks, NOT exploit payloads or a verification of kernel R/W, code injection, or sandbox escape.";
     [stack addArrangedSubview:intro];
-    UIButton *run=[UIButton buttonWithType:UIButtonTypeSystem];
-    [run setTitle:@"Run focused baseline" forState:UIControlStateNormal];
-    [run addTarget:self action:@selector(runBaseline:) forControlEvents:UIControlEventTouchUpInside];
-    [stack addArrangedSubview:run];
+    _allButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    [_allButton setTitle:@"Test All Updated" forState:UIControlStateNormal];
+    [_allButton addTarget:self action:@selector(testAllUpdated:) forControlEvents:UIControlEventTouchUpInside];
+    [stack addArrangedSubview:_allButton];
+    _copyButton=[UIButton buttonWithType:UIButtonTypeSystem];
+    [_copyButton setTitle:@"Copy All Results" forState:UIControlStateNormal];
+    _copyButton.enabled=NO;
+    [_copyButton addTarget:self action:@selector(copyResults:) forControlEvents:UIControlEventTouchUpInside];
+    [stack addArrangedSubview:_copyButton];
     _output=[UITextView new];
     _output.editable=NO;
-    _output.font=[UIFont monospacedSystemFontOfSize:13 weight:UIFontWeightRegular];
+    _output.font=[UIFont monospacedSystemFontOfSize:12 weight:UIFontWeightRegular];
     _output.backgroundColor=UIColor.secondarySystemBackgroundColor;
     _output.layer.cornerRadius=10;
     [stack addArrangedSubview:_output];
-    _output.text=@"Results are written to the same Force JSONL journal.";
+    _output.text=@"Ready. Eight read-only checks across Game Center, AOPTouch, IOSurface, framebuffer, sandbox, and signing. AIO's existing disclosure test remains on its separate page; Test All does not trigger memory-disclosure or mutation experiments.";
 }
-- (void)runBaseline:(id)sender {
+- (void)copyResults:(id)sender {
+    if (!_latestJSON.length) return;
+    UIPasteboard.generalPasteboard.string=_latestJSON;
+    _output.text=[NSString stringWithFormat:@"COPIED ALL RESULTS\n\n%@",_latestJSON];
+}
+- (void)testAllUpdated:(id)sender {
+    _allButton.enabled=NO;
+    _copyButton.enabled=NO;
+    _latestJSON=nil;
     NSString *session=NSUUID.UUID.UUIDString;
-    ForceLog *log=[ForceLog shared];
-    NSArray<NSDictionary *> *items=@[
-        @{@"method":@0,@"case":@"com.apple.developer.game-center"},
-        @{@"method":@0,@"case":@"get-task-allow"},
-        @{@"method":@1,@"case":@"com.apple.gamed"}
-    ];
-    NSMutableArray *outcomes=[NSMutableArray new];
-    for (NSDictionary *item in items) {
-        NSString *method=[item[@"method"] stringValue];
-        NSString *name=item[@"case"], *attempt=NSUUID.UUID.UUIDString;
-        if (![log record:@"before" session:session method:method attempt:attempt
-                 details:@{@"case":name,@"scenario":@"game_center_baseline"}]) {
-            _output.text=[NSString stringWithFormat:@"Log error: %@",log.lastError ?: @"unknown"];
-            return;
-        }
-        NSDictionary *result=ForceBoundedCheck([item[@"method"] unsignedIntegerValue],name);
-        if (![log record:@"after" session:session method:method attempt:attempt
-                 details:@{@"case":name,@"result":result ?: @{},@"scenario":@"game_center_baseline"}]) {
-            _output.text=[NSString stringWithFormat:@"Result log error: %@",log.lastError ?: @"unknown"];
-            return;
-        }
-        [outcomes addObject:@{@"case":name,@"result":result ?: @{}}];
+    ForceLog *journal=[ForceLog shared];
+    NSMutableArray *results=[NSMutableArray new];
+    NSString *failure=nil;
+    NSArray<NSDictionary *> *tests=[self updatedTests];
+    if (![journal record:@"session_start" session:session method:@"updated_suite" attempt:@""
+                details:@{@"test_count":@(tests.count),@"scope":@"read_only_prerequisite_checks",
+                          @"exploit_execution":@NO}]) {
+        failure=journal.lastError ?: @"Cannot start journal";
     }
-    NSData *data=[NSJSONSerialization dataWithJSONObject:outcomes options:NSJSONWritingPrettyPrinted error:nil];
-    _output.text=[NSString stringWithFormat:@"Read-only baseline complete.\nSession: %@\n\n%@",
-        session,[[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @""];
+    for (NSDictionary *test in tests) {
+        if (failure) break;
+        NSString *name=test[@"case"];
+        NSString *attempt=NSUUID.UUID.UUIDString;
+        NSString *method=[test[@"method"] stringValue];
+        NSDictionary *metadata=@{@"case":name,@"track":test[@"track"],@"test":test[@"name"],
+                                  @"scenario":@"updated_suite"};
+        if (![journal record:@"before" session:session method:method attempt:attempt details:metadata]) {
+            failure=journal.lastError ?: @"Failed to log before";
+            break; // Never run a check unless its before record was durable.
+        }
+        NSTimeInterval started=NSProcessInfo.processInfo.systemUptime;
+        NSDictionary *result=ForceBoundedCheck([test[@"method"] unsignedIntegerValue],name);
+        NSNumber *latency=@((NSInteger)((NSProcessInfo.processInfo.systemUptime-started)*1000));
+        if (![journal record:@"after" session:session method:method attempt:attempt
+                    details:@{@"case":name,@"result":result ?: @{},
+                              @"scenario":@"updated_suite",@"latency_ms":latency}]) {
+            failure=journal.lastError ?: @"Failed to log after";
+            break;
+        }
+        [results addObject:@{@"track":test[@"track"], @"test":test[@"name"],
+                             @"case":name,@"method":test[@"method"],
+                             @"latency_ms":latency,@"result":result ?: @{},
+                             @"verified_exploit":@NO}];
+    }
+    [journal record:@"session_end" session:session method:@"updated_suite" attempt:@""
+           details:@{@"completed_checks":@(results.count),
+                     @"expected_checks":@(tests.count),@"error":failure ?: [NSNull null]}];
+    NSDictionary *report=@{
+        @"schema":@1,@"suite":@"updated_read_only_research",
+        @"session":session,@"environment":ForceEnvironmentSnapshot(),
+        @"completed":@(results.count),@"expected":@(tests.count),
+        @"status":failure ? @"incomplete" : @"complete",
+        @"error":failure ?: [NSNull null],
+        @"exploit_executed":@NO,
+        @"interpretation":@"These bounded checks demonstrate only prerequisite metadata or ordinary access status. No kernel R/W, cross-process injection, or sandbox escape was attempted or verified.",
+        @"results":results
+    };
+    NSError *jsonError=nil;
+    NSData *data=[NSJSONSerialization dataWithJSONObject:report
+                          options:NSJSONWritingPrettyPrinted error:&jsonError];
+    _latestJSON=data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+    _output.text=_latestJSON ?: [NSString stringWithFormat:@"Could not serialize results: %@",jsonError];
+    _copyButton.enabled=_latestJSON.length>0;
+    _allButton.enabled=YES;
 }
 @end
 
@@ -2235,7 +2300,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
 }
 - (NSString *)nameAt:(NSIndexPath *)indexPath {
     switch (indexPath.section) {
-        case 0: return @"NEW • Game Center authorization baseline";
+        case 0: return @"NEW • Test All Updated";
         case 1: return @"Force — automated diagnostics";
         case 2: return @"AIO kqueue CVE-2026-84530";
         case 4: return @"AppleAVE2 and service opens";
@@ -2246,7 +2311,7 @@ static NSString *ForceResearchMemo(NSDictionary *report) {
 }
 - (NSString *)noteAt:(NSIndexPath *)indexPath {
     switch (indexPath.section) {
-        case 0: return @"NEW: Compare entitlement and gamed lookup; export results through Force";
+        case 0: return @"NEW: eight focused checks; run all and copy one JSON report";
         case 1: return @"30-minute study, anomalies, pause rules and research package";
         case 2: return @"Kernel AIO heap address disclosure; not arbitrary kernel access";
         case 4: return @"One-time service checks";
