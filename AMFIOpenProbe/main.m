@@ -1145,6 +1145,132 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
     };
 }
 
+
+/* Compact evidence package for offline review. No exploitation claims. */
+static NSDictionary *ForceResearchReport(NSString *journalPath) {
+    NSData *source=[NSData dataWithContentsOfFile:journalPath options:0 error:nil];
+    if (!source.length) return @{@"status":@"no_journal_data"};
+    NSString *text=[[NSString alloc] initWithData:source encoding:NSUTF8StringEncoding];
+    if (!text) return @{@"status":@"invalid_journal_encoding"};
+    NSMutableArray<NSDictionary *> *events=[NSMutableArray new];
+    NSString *latest=nil, *previous=nil;
+    for (NSString *row in [text componentsSeparatedByString:@"\n"]) {
+        if (!row.length) continue;
+        id item=[NSJSONSerialization JSONObjectWithData:
+            [row dataUsingEncoding:NSUTF8StringEncoding] options:0 error:nil];
+        if (![item isKindOfClass:NSDictionary.class]) continue;
+        [events addObject:item];
+        if ([item[@"event"] isEqualToString:@"session_start"]) {
+            previous=latest;
+            latest=item[@"session"];
+        }
+    }
+    if (!latest.length)
+        return @{@"status":@"no_completed_or_active_session",
+                 @"parsed_rows":@(events.count)};
+    NSMutableDictionary<NSString *,NSDictionary *> *inputs=[NSMutableDictionary new];
+    NSMutableDictionary<NSString *,NSMutableDictionary *> *caseStats=[NSMutableDictionary new];
+    NSMutableDictionary<NSString *,NSDictionary *> *previousStates=[NSMutableDictionary new];
+    NSMutableArray *interesting=[NSMutableArray new];
+    NSDictionary *environment=@{};
+    BOOL ended=NO;
+    NSInteger completed=0, firstSeen=0, changed=0, unavailable=0;
+    long long began=0, last=0;
+    for (NSDictionary *entry in events) {
+        NSString *session=entry[@"session"];
+        NSString *kind=entry[@"event"];
+        NSString *method=entry[@"method"];
+        NSDictionary *details=entry[@"details"];
+        if (![session isKindOfClass:NSString.class] ||
+            ![kind isKindOfClass:NSString.class] ||
+            ![details isKindOfClass:NSDictionary.class]) continue;
+        if ([session isEqualToString:previous] &&
+            [kind isEqualToString:@"after"]) {
+            NSString *caseName=details[@"case"];
+            NSDictionary *result=details[@"result"];
+            if ([caseName isKindOfClass:NSString.class] &&
+                [method isKindOfClass:NSString.class] &&
+                [result isKindOfClass:NSDictionary.class]) {
+                NSString *key=[NSString stringWithFormat:@"%@:%@",method,caseName];
+                previousStates[key]=ForceStableState(method.integerValue,result);
+            }
+        }
+        if (![session isEqualToString:latest]) continue;
+        last=MAX(last,[entry[@"unix_ms"] longLongValue]);
+        if ([kind isEqualToString:@"session_start"]) {
+            began=[entry[@"unix_ms"] longLongValue];
+            if ([details[@"environment"] isKindOfClass:NSDictionary.class])
+                environment=details[@"environment"];
+        }
+        if ([kind isEqualToString:@"session_end"]) ended=YES;
+        NSString *attempt=entry[@"attempt"];
+        if ([kind isEqualToString:@"before"] &&
+            [attempt isKindOfClass:NSString.class] && attempt.length)
+            inputs[attempt]=entry;
+        if (![kind isEqualToString:@"after"]) continue;
+        completed++;
+        if ([attempt isKindOfClass:NSString.class]) [inputs removeObjectForKey:attempt];
+        NSString *caseName=details[@"case"];
+        if (![caseName isKindOfClass:NSString.class]) caseName=@"legacy_case_unknown";
+        if (![method isKindOfClass:NSString.class]) method=@"unknown";
+        NSString *key=[NSString stringWithFormat:@"%@:%@",method,caseName];
+        NSMutableDictionary *stats=caseStats[key];
+        if (!stats) {
+            stats=[@{@"method":method,@"case":caseName,@"count":@0,
+                @"changes":@0,@"unavailable":@0} mutableCopy];
+            caseStats[key]=stats;
+        }
+        stats[@"count"]=@([stats[@"count"] integerValue]+1);
+        NSDictionary *result=details[@"result"];
+        if (![result isKindOfClass:NSDictionary.class]) result=@{};
+        if (!stats[@"first_result"]) stats[@"first_result"]=result;
+        stats[@"last_result"]=result;
+        NSString *finding=details[@"finding"];
+        if ([finding isEqualToString:@"first_seen"]) firstSeen++;
+        if ([finding isEqualToString:@"changed"]) {
+            changed++;
+            stats[@"changes"]=@([stats[@"changes"] integerValue]+1);
+        }
+        if (![result[@"status"] isEqualToString:@"ok"]) {
+            unavailable++;
+            stats[@"unavailable"]=@([stats[@"unavailable"] integerValue]+1);
+        }
+        if (([finding isEqualToString:@"changed"] ||
+             ![result[@"status"] isEqualToString:@"ok"]) && interesting.count<50)
+            [interesting addObject:@{@"time":entry[@"time"] ?: @"",
+                @"method":method,@"case":caseName,@"finding":finding ?: @"",
+                @"previous":details[@"previous_state"] ?: @{},@"result":result}];
+    }
+    NSMutableArray *betweenSessions=[NSMutableArray new];
+    for (NSString *key in [[caseStats allKeys] sortedArrayUsingSelector:@selector(compare:)]) {
+        NSDictionary *prior=previousStates[key];
+        if (!prior) continue;
+        NSDictionary *newest=ForceStableState([caseStats[key][@"method"] integerValue],
+                                           caseStats[key][@"last_result"]);
+        if (![prior isEqualToDictionary:newest])
+            [betweenSessions addObject:@{@"case_key":key,
+                 @"previous_session_state":prior,@"current_session_state":newest}];
+    }
+    NSArray *cases=[caseStats.allValues sortedArrayUsingComparator:
+        ^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+            NSString *left=[NSString stringWithFormat:@"%@:%@",a[@"method"],a[@"case"]];
+            NSString *right=[NSString stringWithFormat:@"%@:%@",b[@"method"],b[@"case"]];
+            return [left compare:right];
+        }];
+    return @{
+        @"schema":@1,@"status":ended ? @"ended" : @"unfinished_or_active",
+        @"session":latest,@"previous_session":previous ?: [NSNull null],
+        @"environment":environment,
+        @"elapsed_seconds":@(began>0 ? MAX(0LL,(last-began)/1000LL) : 0LL),
+        @"completed_checks":@(completed),@"first_seen_states":@(firstSeen),
+        @"within_session_changes":@(changed),@"unavailable_api_calls":@(unavailable),
+        @"unmatched_before_records":@(inputs.count),
+        @"per_case":cases,@"notable_observations":interesting,
+        @"cross_session_differences":betweenSessions,
+        @"interpretation":@"These are read-only checks. Successful name lookup, registered service, access(2) or symbol visibility does not demonstrate privileged authorization, kernel compromise or jailbreak."
+    };
+}
+
 #pragma mark - Force planning UI (Step 1 of 4)
 
 /* Bounded read-only workers only; no malformed inputs or exploit payloads. */
@@ -1292,6 +1418,11 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
     [selfTest setTitle:@"Test durable before/after logging" forState:UIControlStateNormal];
     [selfTest addTarget:self action:@selector(testJournal:) forControlEvents:UIControlEventTouchUpInside];
     [_content addArrangedSubview:selfTest];
+    UIButton *package=[UIButton buttonWithType:UIButtonTypeSystem];
+    [package setTitle:@"Export research package (report + JSONL)" forState:UIControlStateNormal];
+    [package addTarget:self action:@selector(exportResearchPackage:)
+        forControlEvents:UIControlEventTouchUpInside];
+    [_content addArrangedSubview:package];
     UIButton *share=[UIButton buttonWithType:UIButtonTypeSystem];
     [share setTitle:@"Export Force JSONL journal" forState:UIControlStateNormal];
     [share addTarget:self action:@selector(exportJournal:) forControlEvents:UIControlEventTouchUpInside];
@@ -1564,6 +1695,29 @@ static NSDictionary *ForceEnvironmentSnapshot(void) {
         [[ForceLog shared] record:@"stop_requested" session:_activeSession
             method:@"runner" attempt:@"" details:@{}];
     _status.text=@"Stop requested; workers finish the current bounded operation.";
+}
+
+- (void)exportResearchPackage:(id)sender {
+    ForceLog *journal=[ForceLog shared];
+    NSDictionary *report=ForceResearchReport(journal.path);
+    NSError *error=nil;
+    NSData *data=[NSJSONSerialization dataWithJSONObject:report
+        options:NSJSONWritingPrettyPrinted|NSJSONWritingSortedKeys error:&error];
+    if (!data) {
+        _status.text=[NSString stringWithFormat:@"Report creation failed: %@",error.localizedDescription];
+        return;
+    }
+    NSString *reportPath=[[journal.path stringByDeletingLastPathComponent]
+        stringByAppendingPathComponent:@"force-research-report.json"];
+    if (![data writeToFile:reportPath options:NSDataWritingAtomic error:&error]) {
+        _status.text=[NSString stringWithFormat:@"Report write failed: %@",error.localizedDescription];
+        return;
+    }
+    UIActivityViewController *share=[[UIActivityViewController alloc]
+        initWithActivityItems:@[[NSURL fileURLWithPath:reportPath],
+            [NSURL fileURLWithPath:journal.path]] applicationActivities:nil];
+    share.popoverPresentationController.sourceView=(UIView *)sender;
+    [self presentViewController:share animated:YES completion:nil];
 }
 - (void)exportJournal:(id)sender {
     NSString *path=[ForceLog shared].path;
