@@ -964,7 +964,8 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         if (result) CFRelease(result);
         if (task) CFRelease(task);
         dlclose(security);
-        return @{@"status":@"ok",@"entitlement_present":@(present)};
+        return @{@"status":@"ok",@"entitlement_present":@(present),
+                 @"note":@"Presence only; not proof of service authorization"};
     }
     if (method==1) {
         typedef kern_return_t (*Lookup)(mach_port_t,const char *,mach_port_t *);
@@ -1031,6 +1032,8 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     UITextView *_liveConsole;
     UILabel *_liveSummary;
     UIButton *_pauseButton;
+    UISwitch *_advancedToggle;
+    BOOL _advancedApproved;
 }
 - (UILabel *)addText:(NSString *)text font:(UIFont *)font {
     UILabel *label=[UILabel new];
@@ -1097,6 +1100,19 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         [_choices addObject:toggle];
         [_content addArrangedSubview:line];
     }
+    [self addText:@"Advanced Research mode" font:[UIFont preferredFontForTextStyle:UIFontTextStyleHeadline]];
+    [self addText:@"Opt-in additional bounded signing-permission checks, not automated kernel exploit attempts." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
+    UIStackView *advancedRow=[UIStackView new];
+    advancedRow.axis=UILayoutConstraintAxisHorizontal;
+    advancedRow.alignment=UIStackViewAlignmentCenter;
+    UILabel *advancedName=[UILabel new];
+    advancedName.text=@"Enable Advanced Research";
+    [advancedRow addArrangedSubview:advancedName];
+    _advancedToggle=[UISwitch new];
+    [_advancedToggle addTarget:self action:@selector(advancedChanged:)
+        forControlEvents:UIControlEventValueChanged];
+    [advancedRow addArrangedSubview:_advancedToggle];
+    [_content addArrangedSubview:advancedRow];
     [self addText:@"Runs continue until Stop is tapped, the app is backgrounded, or iPadOS terminates it. Pause suspends new checks without ending the session." font:[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote]];
     UIStackView *parallel=[UIStackView new];
     parallel.axis=UILayoutConstraintAxisHorizontal;
@@ -1210,6 +1226,25 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
         [NSString stringWithFormat:@"AFTER record failed: %@",journal.lastError ?: @"unknown"];
 }
 
+- (void)advancedChanged:(UISwitch *)sender {
+    if (!sender.on || _advancedApproved) return;
+    sender.on=NO;
+    UIAlertController *safety=[UIAlertController alertControllerWithTitle:
+        @"Advanced Research — first-use safety review"
+        message:@"This mode adds bounded signing-permission checks. Possible risks: API errors, app termination, battery drain, larger logs and loss of unsaved work if iPadOS interrupts the app. It does not intentionally panic the kernel, inject code or bypass signing. A backup does not guarantee recovery from every failure. Keep the app open and export the journal."
+        preferredStyle:UIAlertControllerStyleAlert];
+    [safety addAction:[UIAlertAction actionWithTitle:@"Cancel"
+        style:UIAlertActionStyleCancel handler:nil]];
+    [safety addAction:[UIAlertAction actionWithTitle:@"I understand — enable"
+        style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            self->_advancedApproved=YES;
+            self->_advancedToggle.on=YES;
+            [[ForceLog shared] record:@"advanced_consent" session:@"interface"
+                method:@"safety_review" attempt:@""
+                details:@{@"accepted":@YES,@"scope":@"bounded_signing_verification"}];
+        }]];
+    [self presentViewController:safety animated:YES completion:nil];
+}
 - (void)startForce:(id)sender {
     if (_activeSession) { _status.text=@"A session is already running."; return; }
     if (!_accepted.on) { _status.text=@"Review and acknowledge the risks first."; return; }
@@ -1219,10 +1254,11 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     if (!chosen.count) { _status.text=@"Select at least one method."; return; }
     ForceLog *log=[ForceLog shared];
     if (log.lastError) { _status.text=log.lastError; return; }
+    BOOL advanced=_advancedToggle.on && _advancedApproved;
     NSString *session=NSUUID.UUID.UUIDString;
     if (![log record:@"session_start" session:session method:@"runner" attempt:@""
              details:@{@"method_indices":chosen,@"duration_seconds":@"until_stopped",
-                       @"concurrent":@(_concurrent.on)}]) {
+                       @"concurrent":@(_concurrent.on),@"advanced":@(advanced)}]) {
         _status.text=log.lastError ?: @"Could not save session record";
         return;
     }
@@ -1242,7 +1278,12 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     for (NSNumber *number in chosen) {
         NSUInteger method=number.unsignedIntegerValue;
         [_forceQueue addOperationWithBlock:^{
-            NSArray<NSString *> *items=ForceItems(method);
+            NSMutableArray<NSString *> *expanded=[ForceItems(method) mutableCopy];
+            if (advanced && method==0)
+                [expanded addObjectsFromArray:@[@"platform-application",
+                    @"com.apple.private.security.no-sandbox",
+                    @"com.apple.security.application-groups"]];
+            NSArray<NSString *> *items=expanded;
             NSInteger iteration=0;
             while (YES) {
                 ForcePageController *strongSelf=weakSelf;
@@ -1399,7 +1440,7 @@ static NSDictionary *ForceBoundedCheck(NSUInteger method, NSString *item) {
     if (indexPath.section == 0) return @"Existing cross-app data-file write validation";
     if (indexPath.section == 2) return @"One-time service access checks";
     if (indexPath.section == 3) return @"AIO work-entry heap pointer disclosure, read-only";
-    if (indexPath.section == 4) return @"Start, pause/resume, stop, live results and JSONL export";
+    if (indexPath.section == 4) return @"Live checks, advanced signing review and JSONL export";
     return @[@"Registered services; manager connection",
              @"Registry only — no connection opens",
              @"Standard HID manager client opens",
